@@ -1,7 +1,7 @@
 /* SmolLM2-1.7B-Instruct inference for the x86-64 UEFI application.
  * Q4 weights are loaded from USB once and read directly from RAM. */
 #include "baremetal/runtime.h"
-#include <emmintrin.h>
+#include <immintrin.h>
 
 enum { D=2048, H=8192, L=24, NH=32, NK=32, V=49152, HS=64, KD=2048,
        G=32, BLOCK=18, MAXCTX=8192, HASH=131072, MODEL_BYTES=964120960 };
@@ -222,7 +222,7 @@ static __m128 dot16(__m128i q, const float *x) {
                       _mm_add_ps(_mm_mul_ps(c,_mm_loadu_ps(x+8)),_mm_mul_ps(d,_mm_loadu_ps(x+12))));
 }
 typedef struct { float *out; const unsigned char *w; const float *x; int cols; } MatvecJob;
-static void matvec_rows(void *argument, int first, int last) {
+static void matvec_rows_sse2(void *argument, int first, int last) {
     const MatvecJob *job=argument;
     float *out=job->out;
     const unsigned char *w=job->w;
@@ -240,6 +240,52 @@ static void matvec_rows(void *argument, int first, int last) {
         }
         float s[4]; _mm_storeu_ps(s,sum); out[row]=(s[0]+s[1])+(s[2]+s[3]);
     }
+}
+/* Each AVX2 multiply processes eight weights. Reduce its two 128-bit halves
+ * before adding the next product, preserving dot16's exact SSE2 sum tree.
+ * No FMA/F16C requirement, and no reassociation or contraction of FP sums. */
+#define AVX2_TARGET __attribute__((target("avx2,no-fma")))
+static inline AVX2_TARGET __m128 dot16_avx2(__m128i q, const float *x) {
+    __m256 eight=_mm256_set1_ps(8.0f);
+    __m256 a=_mm256_sub_ps(_mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(q)),eight);
+    __m256 b=_mm256_sub_ps(_mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_srli_si128(q,8))),eight);
+    a=_mm256_mul_ps(a,_mm256_loadu_ps(x));
+    b=_mm256_mul_ps(b,_mm256_loadu_ps(x+8));
+    return _mm_add_ps(_mm_add_ps(_mm256_castps256_ps128(a),_mm256_extractf128_ps(a,1)),
+                      _mm_add_ps(_mm256_castps256_ps128(b),_mm256_extractf128_ps(b,1)));
+}
+static inline AVX2_TARGET float half_avx2(const unsigned char *p) {
+    /* Keep scale decoding inline: a legacy SSE call in this inner loop would
+     * spill vector registers and add AVX/SSE transition overhead per block. */
+    uint32_t h=(uint32_t)p[0]|((uint32_t)p[1]<<8);
+    uint32_t sign=(h&0x8000)<<16, e=(h>>10)&31, f=h&1023;
+    if (!e) return (h&0x8000 ? -1.0f : 1.0f)*((float)f*0x1p-24f);
+    uint32_t bits=sign|((e==31 ? 255 : e+112)<<23)|(f<<13);
+    float value; __builtin_memcpy(&value,&bits,sizeof(value)); return value;
+}
+static AVX2_TARGET __attribute__((noinline)) void matvec_rows_avx2(void *argument, int first, int last) {
+    const MatvecJob *job=argument;
+    for (int row=first;row<last;row++) {
+        const unsigned char *p=job->w+(size_t)row*(job->cols/G)*BLOCK;
+        __m128 sum=_mm_setzero_ps();
+        const __m128i mask=_mm_set1_epi8(15);
+        for (int j=0;j<job->cols;j+=G,p+=BLOCK) {
+            __m128i q=_mm_loadu_si128((const __m128i *)(p+2));
+            __m128 a=dot16_avx2(_mm_and_si128(q,mask),job->x+j);
+            __m128 b=dot16_avx2(_mm_and_si128(_mm_srli_epi16(q,4),mask),job->x+j+16);
+            sum=_mm_add_ps(sum,_mm_mul_ps(_mm_set1_ps(half_avx2(p)),_mm_add_ps(a,b)));
+        }
+        float s[4]; _mm_storeu_ps(s,sum); job->out[row]=(s[0]+s[1])+(s[2]+s[3]);
+    }
+    _mm256_zeroupper(); /* Return to the SSE2 runtime with no live YMM values. */
+}
+static void matvec_rows(void *argument, int first, int last) {
+    /* This runs on each BSP/AP, after its FP preparation, not just at boot. */
+    bm_avx2_scope scope;
+    int avx2=bm_simd_auto() && bm_avx2_begin(&scope);
+    bm_simd_record(avx2);
+    if (avx2) { matvec_rows_avx2(argument,first,last); bm_avx2_end(&scope); }
+    else matvec_rows_sse2(argument,first,last);
 }
 static void matvec(float *out, const unsigned char *w, const float *x, int rows, int cols) {
     MatvecJob job={out,w,x,cols};

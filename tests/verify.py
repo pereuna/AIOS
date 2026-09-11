@@ -90,14 +90,26 @@ def verify():
         assert np.isfinite(x).all(), index
     expected = norm(x, final_norm) @ unpack(embed).T
     command = [str(ROOT / ".build/test-inference"), str(ROOT / "model.bin")]
+    capability = subprocess.check_output([command[0], "--simd"], text=True).strip()
     result = subprocess.run(command, check=True, capture_output=True,
-                            env={**os.environ, "SMOL_THREADS": "1", "SMOL_MP_MODE": "pool"})
-    for threads, mode in ((2, "pool"), (4, "pool"), (4, "blocking")):
+                            env={**os.environ, "SMOL_THREADS": "1", "SMOL_MP_MODE": "pool",
+                                 "SMOL_SIMD": "sse2"})
+    assert result.stderr.strip() == b"Matvec: SSE2"
+    cases = [("sse2", n, mode) for n, mode in ((2, "pool"), (4, "pool"), (4, "blocking"))]
+    if capability == "AVX2":
+        cases += [("avx2", n, mode) for n, mode in
+                  ((1, "pool"), (2, "pool"), (4, "pool"), (4, "blocking"))]
+    else:
+        print("AVX2 unavailable: AVX2 inference comparison skipped")
+    cases.append(("auto", 4, "pool"))
+    for simd, threads, mode in cases:
         parallel = subprocess.run(command, check=True, capture_output=True,
                                   env={**os.environ, "SMOL_THREADS": str(threads),
-                                       "SMOL_MP_MODE": mode})
-        assert parallel.stdout == result.stdout, (threads, mode, "parallel logits changed")
-    print("MP / serial: 2- and 4-worker pool and blocking AP dispatch are bit-identical")
+                                       "SMOL_MP_MODE": mode, "SMOL_SIMD": simd})
+        expected_kernel = capability if simd == "auto" else simd.upper()
+        assert parallel.stderr.strip() == f"Matvec: {expected_kernel}".encode()
+        assert parallel.stdout == result.stdout, (simd, threads, mode, "logits changed")
+    print(f"{capability}/SSE2 / MP: all tested kernels, worker counts and dispatch modes are bit-identical")
     actual = np.frombuffer(result.stdout, "<f4").reshape(len(TOKENS), VOCAB)
     assert np.isfinite(actual).all()
     np.testing.assert_allclose(actual, expected, atol=0.002, rtol=0.0002)

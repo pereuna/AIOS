@@ -72,8 +72,10 @@ tiedostoa ei ole allekirjoitettu. Suositus on vähintään 4 GiB RAMia.
 Oletuskonteksti on 1 024 tokenia: mallipainot ja FP32-KV-välimuisti vievät
 yhteensä noin 1,27 GiB, minkä lisäksi tarvitaan ohjelman ja firmwaren muistia.
 2 048 tokenilla vastaava määrä on noin 1,65 GiB. Täysi 8 192 tokenin konteksti
-ei käytännössä mahdu 4 GiB:n koneeseen. Matriisi-vektorilaskenta käyttää SSE2:ta
-ja UEFI MP Services -rajapinnan avulla enintään neljää loogista prosessoria.
+ei käytännössä mahdu 4 GiB:n koneeseen. Matriisi-vektorilaskenta käyttää
+automaattisesti AVX2:ta, kun suorittavan ytimen CPUID ja XCR0 sallivat sen;
+muuten käytetään SSE2:ta. UEFI MP Services -rajapinnalla laskenta käyttää
+enintään neljää loogista prosessoria.
 Puuttuvalla MP-tuella laskenta toimii yhdellä prosessorilla. Oletus on neljä
 workeria; komennolla `/threads 1` voi mitata yhden prosessorin vertailutuloksen.
 1.7B on selvästi nykyistä edeltänyttä 135M-mallia raskaampi.
@@ -100,12 +102,18 @@ Komennot käyttöliittymässä:
 | `/tokens N` | Aseta vastauksen enimmäispituus |
 | `/stats` | Näytä konteksti, vapaa muistimäärä ja käyntiaika |
 | `/threads N` | Valitse 1–4 workeria; 1 käyttää sarjalaskentaa |
+| `/simd auto` | Käytä AVX2:ta sitä tukevilla workereilla (oletus), muuten SSE2:ta |
+| `/simd sse2` | Pakota SSE2 vertailumittausta varten |
 | `/selftest` | Aja laskennan tarkistus |
 | `/help` | Näytä ohje |
 | `/quit` | Sammuta kone UEFI:n kautta |
 
 `Compute:`-rivi näyttää todellisen workerien määrän ja tilan: `MP pool`,
 `MP blocking` tai `serial`. Vastauksen lopussa näkyy myös tokenia sekunnissa.
+`Matvec:` kertoo SIMD-valinnan, BSP:n käyttövalmiuden ja viime ajossa käytetyt
+käskykannat. `/selftest`-ajon jälkeen näkee myös AP:iden mahdollisen SSE2-varapolun.
+Prosessorin AVX2-tuki ei yksin riitä: UEFI:n pitää sallia XMM/YMM-tila.
+Ohjelma tarkistaa tämän jokaisella workerilla eikä muuta firmwaren CR4/XCR0-asetuksia.
 Firmwaren sallimassa pool-tilassa BSP ja enintään kolme AP:tä laskevat
 rinnakkain. Jos firmware sallii vain synkroniset MP-kutsut, BSP odottaa ja AP:t
 laskevat: neljän loogisen prosessorin koneella tällöin käytössä on enintään

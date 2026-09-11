@@ -1,5 +1,35 @@
 # UEFI-version tarkistus
 
+## AVX2-version kehityskonetestit (11.9.2026)
+
+`make test` läpäisi. Kaikki 196 608 logittia täsmäsivät bittitasolla SSE2:n
+ja AVX2:n välillä yhdellä, kahdella ja neljällä workerilla sekä synkronisessa
+AP-tilassa. Automaattinen valinta käytti kehityskoneella AVX2:ta.
+Riippumattoman NumPy-vertailun suurin ero oli 0,00023842 ja tokenit
+`[805, 198, 2, 17]`.
+
+Ennen AVX2-muutosta käännetty testiohjelma, uusi pakotettu SSE2 ja uusi AVX2
+tuottivat saman logittitulosteen SHA-256-tiivisteen:
+`844dd2320299ff683e09a1964c55e8f27f78dfe205ad1d989c1daa028f983571`.
+
+SIMD-ytimien testit kattoivat kaikki 65 536 FP16-bittikuviota, riippumattoman
+skalaarisen matvec-vertailun, suojaussivut, kohdistamattomat syötteet,
+rivialueet ja workerikohtaisen AVX2-tuen puuttumisen. Samat testit läpäisivät
+AddressSanitizerin, UndefinedBehaviorSanitizerin ja ThreadSanitizerin.
+
+Valmiin EFI-kuvan konekoodissa AVX-käskyjä esiintyi vain
+`matvec_rows_avx2()`-funktiossa, eikä FMA-käskyjä ollut. Linkitettyyn kuvaan
+ei jäänyt ratkaisemattomia symboleja. EFI-kuvan koko on 41 866 tavua ja SHA-256
+`b2547e66837e49757f23bb53d735cf634d3236f455ab1ade04b744a93b2e7dee`.
+Malli rakennettiin uudelleen ja sen SHA-256 säilyi arvossa
+`a309d378bc03490e65f8e88a76ee2482f85751a248731ec3663b1647447b7620`.
+AVX2-versio tarvitsee vielä oman UEFI-rautatestinsä.
+
+`make bench` mittasi kahden workerin AVX2-ytimelle 3,48 tokenia/s, noin 3,05×
+saman worker-määrän SSE2-tuloksen. Neljällä workerilla AVX2 saavutti
+3,23 tokenia/s. Mittaustapa ja kaikki mediaanit ovat
+tiedostossa [performance.md](performance.md#avx2-vertailu-1192026).
+
 ## Vahvistettu rautakäynnistys (11.9.2026)
 
 Käyttäjä vahvisti tämän keskustelun rautatestissä järjestelmätyökaluilla
@@ -32,8 +62,9 @@ tiedostossa [performance.md](performance.md#mitattu-tulos-1192026).
 Uusi EFI-kuva on 39 858 tavua ja sen SHA-256 on
 `8ffe20b5192f8a5bca438707a0305cf30728974d0bc7cecc12ac06d3ac177455`.
 Linkitetyssä kuvassa ei ole ratkaisemattomia symboleja. Malli ja sen tiiviste
-ovat muuttumattomat. Tätä MP-kuvaa ei ole vielä kirjoitettu muistitikulle
-eikä testattu fyysisellä UEFI-koneella.
+ovat muuttumattomat. Tämä SSE2/MP-kuva kopioitiin myöhemmin samana päivänä
+muistitikulle ja kopion tiiviste tarkistettiin. MP-version rautatestin tulosta
+ei ole vielä vahvistettu.
 
 ## Rakennus järjestelmätyökaluilla (11.9.2026)
 

@@ -16,7 +16,15 @@ void bm_check_finite(const char *where, const float *values, size_t n, int pos, 
     for (size_t i=0;i<n;i++) if (!isfinite(values[i])) bm_panic(where);
 }
 int main(int argc, char **argv) {
+    if (argc==2 && !strcmp(argv[1],"--simd")) {
+        puts(bm_cpu_avx2_available() ? "AVX2" : "SSE2"); return 0;
+    }
     if (argc<2 || argc>3) return 2;
+    const char *simd=getenv("SMOL_SIMD");
+    if (simd && strcmp(simd,"auto") && strcmp(simd,"sse2") && strcmp(simd,"avx2")) return 2;
+    /* 'avx2' requires actual AVX2 execution; it never bypasses CPU checks. */
+    if (simd && !strcmp(simd,"avx2") && !bm_cpu_avx2_available()) return 77;
+    bm_simd_set_auto(!simd || strcmp(simd,"sse2"));
     const char *threads=getenv("SMOL_THREADS"), *mode=getenv("SMOL_MP_MODE");
     unsigned wanted=threads ? (unsigned)strtoul(threads,NULL,10) : 4;
     if (wanted<1 || wanted>4) return 2;
@@ -54,5 +62,7 @@ int main(int argc, char **argv) {
     }
     free(m); munmap(data,(size_t)st.st_size); close(fd);
     test_mp_assert_idle();
+    fprintf(stderr,"Matvec: %s\n",bm_simd_used());
+    if (simd && !strcmp(simd,"avx2") && strcmp(bm_simd_used(),"AVX2")) return 1;
     return 0;
 }

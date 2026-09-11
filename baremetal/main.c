@@ -15,6 +15,9 @@ static void workers_status(void) {
     bm_puts("Compute: "); bm_puts(bm_parallel_mode()); bm_puts("; workers ");
     bm_uint(bm_parallel_count()); bm_puts("; requested "); bm_uint(bm_parallel_limit());
     bm_putc('\n');
+    bm_puts("Matvec: "); bm_puts(bm_simd_auto() ? "auto" : "forced SSE2");
+    bm_puts("; BSP "); bm_puts(bm_cpu_avx2_status());
+    bm_puts("; last run "); bm_puts(bm_simd_used()); bm_putc('\n');
 }
 static int integer(const char *s, unsigned min, unsigned max) {
     if (!*s) return -1;
@@ -31,6 +34,7 @@ static void help(void) {
             "/reset   clear conversation     /tokens N   answer length\n"
             "/stats   memory and context     /selftest   numerical probe\n"
             "/threads N   1..4 workers (1 = serial comparison)\n"
+            "/simd auto|sse2   select matvec instructions\n"
             "/help    show help              /quit       power off\n");
 }
 static void math_check(void) {
@@ -50,6 +54,7 @@ static void selftest(Model *m) {
     const int probes[]={0,1,2,17,198,216,999,1000,4096,9690,16384,19556,24576,32768,40000,49151};
     size_t before=bm_heap_available();
     State *s=new_state(m,8);
+    bm_simd_reset();
     bm_parallel_begin();
     workers_status();
     bm_puts("SELFTEST BEGIN\n");
@@ -65,11 +70,13 @@ static void selftest(Model *m) {
     }
     bm_parallel_end();
     bm_puts("SELFTEST time "); elapsed(bm_ticks-began); bm_puts("s\n");
+    workers_status();
     free_state(s);
     if (bm_heap_available()!=before) bm_panic("selftest leaked heap memory");
     bm_puts("SELFTEST END heap restored\n");
 }
 static void respond(Model *m, State *s, int *ids, int n, int limit) {
+    bm_simd_reset();
     bm_parallel_begin();
     workers_status();
     uint64_t start=bm_ticks;
@@ -92,6 +99,7 @@ static void respond(Model *m, State *s, int *ids, int n, int limit) {
     bm_puts("s; output "); bm_uint((unsigned)count); bm_puts(" tokens, "); elapsed(end-ready);
     bm_puts("s; "); rate((unsigned)count,end-ready); bm_puts(" tok/s; ");
     bm_puts(bm_parallel_mode()); bm_putc(' '); bm_uint(bm_parallel_count()); bm_puts(" workers");
+    bm_puts("; "); bm_puts(bm_simd_used());
     bm_puts(ended ? "]\n" : "; limit reached]\n");
 }
 _Noreturn void bm_main(void) {
@@ -125,6 +133,12 @@ _Noreturn void bm_main(void) {
         if (!strcmp(line,"/reset")) { s->pos=0; bm_puts("Conversation cleared.\n"); continue; }
         if (!strcmp(line,"/help")) { help(); continue; }
         if (!strcmp(line,"/selftest")) { selftest(m); continue; }
+        if (!memcmp(line,"/simd ",6)) {
+            if (!strcmp(line+6,"auto")) bm_simd_set_auto(1);
+            else if (!strcmp(line+6,"sse2")) bm_simd_set_auto(0);
+            else { bm_puts("Use /simd auto|sse2\n"); continue; }
+            workers_status(); continue;
+        }
         if (!strcmp(line,"/stats")) {
             bm_puts("Context "); bm_uint((unsigned)s->pos); bm_putc('/'); bm_uint(BOOT_CONTEXT);
             bm_puts("; free heap "); bm_uint(bm_heap_available()); bm_puts(" bytes; uptime ");

@@ -129,4 +129,5 @@ void test_mp_setup(TestMP settings) {
     bm_mp_init(&services);
 }
 unsigned test_mp_starts(void) { return starts; }
+unsigned test_mp_cpu(void) { return (unsigned)current_cpu; }
 uint64_t test_mp_started_cpus(void) { return started_cpus; }

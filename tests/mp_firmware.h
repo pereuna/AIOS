@@ -10,5 +10,6 @@ typedef struct {
 void test_mp_setup(TestMP);
 void test_mp_assert_idle(void);
 unsigned test_mp_starts(void);
+unsigned test_mp_cpu(void);
 uint64_t test_mp_started_cpus(void);
 #endif

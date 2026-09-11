@@ -29,9 +29,9 @@ EFI_BOOTSTRAP = $(if $(filter $(GNU_EFI_ROOT),$(EFI_ROOT)),$(GNU_EFI_STAMP))
 EFI_CFLAGS = -O3 -std=c11 -Wall -Wextra -Wpedantic -ffreestanding -fno-builtin \
 	-fno-stack-protector -fpic -fshort-wchar -fno-asynchronous-unwind-tables \
 	-fno-unwind-tables -m64 -mno-red-zone -mno-avx -msse2 -mfpmath=sse \
-	-mno-80387 -mno-mmx -maccumulate-outgoing-args -DGNU_EFI_USE_MS_ABI \
+	-mno-80387 -mno-mmx -ffp-contract=off -maccumulate-outgoing-args -DGNU_EFI_USE_MS_ABI \
 	-I$(EFI_ROOT)/include/efi -I$(EFI_ROOT)/include/efi/x86_64
-OBJECTS = .build/main.o .build/platform.o .build/mp.o .build/lib.o .build/math.o .build/fp.o
+OBJECTS = .build/main.o .build/platform.o .build/mp.o .build/cpu.o .build/lib.o .build/math.o .build/fp.o
 BOOT = dist/EFI/BOOT/BOOTX64.EFI
 
 .PHONY: all clean model model-check test bench FORCE
@@ -100,6 +100,7 @@ $(GNU_EFI_STAMP):
 
 .build/main.o: neural.c .build/config.h
 .build/mp.o .build/platform.o: baremetal/mp.h
+.build/cpu.o: baremetal/cpu.h
 
 .build/fp.o: baremetal/fp.S | .build
 	$(CC) -m64 -c $< -o $@
@@ -125,8 +126,8 @@ dist/model.bin: model.bin
 	cp $< $@.tmp
 	mv $@.tmp $@
 
-MP_TEST_SOURCES = tests/mp_firmware.c baremetal/mp.c baremetal/fp.S
-MP_TEST_DEPS = $(MP_TEST_SOURCES) tests/mp_firmware.h baremetal/mp.h baremetal/runtime.h
+MP_TEST_SOURCES = tests/mp_firmware.c baremetal/mp.c baremetal/cpu.c baremetal/fp.S
+MP_TEST_DEPS = $(MP_TEST_SOURCES) tests/mp_firmware.h baremetal/mp.h baremetal/cpu.h baremetal/runtime.h
 
 .build/test-inference: tests/inference.c neural.c baremetal/math.c $(MP_TEST_DEPS) Makefile $(EFI_BOOTSTRAP) | .build
 	$(CC) $(EFI_CFLAGS) -pthread tests/inference.c baremetal/math.c $(MP_TEST_SOURCES) -o $@
@@ -134,13 +135,18 @@ MP_TEST_DEPS = $(MP_TEST_SOURCES) tests/mp_firmware.h baremetal/mp.h baremetal/r
 .build/test-parallel: tests/parallel.c $(MP_TEST_DEPS) Makefile $(EFI_BOOTSTRAP) | .build
 	$(CC) $(EFI_CFLAGS) -pthread tests/parallel.c $(MP_TEST_SOURCES) -o $@
 
+.build/test-simd: tests/simd.c neural.c baremetal/math.c $(MP_TEST_DEPS) Makefile $(EFI_BOOTSTRAP) | .build
+	$(CC) $(EFI_CFLAGS) -Wno-unused-function -pthread tests/simd.c baremetal/math.c $(MP_TEST_SOURCES) \
+		-Wl,--wrap=bm_avx2_begin -o $@
+
 .build/test-file-loader: tests/file_loader.c baremetal/platform.c baremetal/mp.h baremetal/runtime.h Makefile $(EFI_BOOTSTRAP) | .build
 	$(CC) $(EFI_CFLAGS) tests/file_loader.c -o $@
 
-test: all .build/test-inference .build/test-file-loader .build/test-parallel
+test: all .build/test-inference .build/test-file-loader .build/test-parallel .build/test-simd
 	$(PYTHON) -m unittest discover -s tests -p 'test_*.py'
 	.build/test-file-loader
 	.build/test-parallel
+	.build/test-simd
 	$(PYTHON) tests/verify.py
 
 bench: model.bin .build/test-inference
