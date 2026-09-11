@@ -1,0 +1,340 @@
+#!/usr/bin/env python3
+"""Export the pinned SmolLM2 checkpoint to the project's SMOLQ4 format."""
+
+import argparse
+import json
+import math
+import struct
+import unicodedata
+from pathlib import Path
+
+try:
+    import numpy as np
+except ImportError as exc:
+    raise SystemExit("export_model.py requires NumPy") from exc
+
+
+D = 576
+H = 1536
+LAYERS = 30
+HEADS = 9
+KV_HEADS = 3
+KV_DIM = 192
+VOCAB = 49152
+MAX_CONTEXT = 8192
+GROUP = 32
+SPECIALS = 17
+EXPECTED_RANGES = 807
+EXPECTED_SIZE = 76912256
+
+# Unicode 15.1 PropList.txt, property White_Space.
+WHITE_SPACE = (
+    (0x0009, 0x000D),
+    (0x0020, 0x0020),
+    (0x0085, 0x0085),
+    (0x00A0, 0x00A0),
+    (0x1680, 0x1680),
+    (0x2000, 0x200A),
+    (0x2028, 0x2029),
+    (0x202F, 0x202F),
+    (0x205F, 0x205F),
+    (0x3000, 0x3000),
+)
+
+
+def fail(message):
+    raise ValueError(message)
+
+
+def load_json(path):
+    with path.open(encoding="utf-8") as source:
+        return json.load(source)
+
+
+def check_config(config):
+    expected = {
+        "hidden_size": D,
+        "intermediate_size": H,
+        "num_hidden_layers": LAYERS,
+        "num_attention_heads": HEADS,
+        "num_key_value_heads": KV_HEADS,
+        "vocab_size": VOCAB,
+        "max_position_embeddings": MAX_CONTEXT,
+        "bos_token_id": 1,
+        "eos_token_id": 2,
+        "rms_norm_eps": 1e-5,
+        "rope_theta": 100000,
+        "tie_word_embeddings": True,
+    }
+    for name, value in expected.items():
+        if config.get(name) != value:
+            fail(f"unsupported config value {name}={config.get(name)!r}")
+
+
+def byte_alphabet():
+    direct = list(range(ord("!"), ord("~") + 1))
+    direct += list(range(ord("¡"), ord("¬") + 1))
+    direct += list(range(ord("®"), ord("ÿ") + 1))
+    codepoints = list(direct)
+    extra = 0
+    for byte in range(256):
+        if byte not in direct:
+            direct.append(byte)
+            codepoints.append(256 + extra)
+            extra += 1
+    return {byte: chr(codepoint) for byte, codepoint in zip(direct, codepoints)}
+
+
+def unicode_ranges():
+    if unicodedata.unidata_version != "15.1.0":
+        fail(
+            "Python must provide Unicode 15.1.0 data; found "
+            + unicodedata.unidata_version
+        )
+
+    whitespace = set()
+    for first, last in WHITE_SPACE:
+        whitespace.update(range(first, last + 1))
+
+    ranges = []
+    start = last = kind = None
+    for codepoint in range(0x110000):
+        category = unicodedata.category(chr(codepoint))[0]
+        current = 1 if category == "L" else 2 if category == "N" else 0
+        if codepoint in whitespace:
+            current = 3
+        if current == kind and current and codepoint == last + 1:
+            last = codepoint
+            continue
+        if kind:
+            ranges.append((start, last, kind))
+        start = last = codepoint
+        kind = current
+    if kind:
+        ranges.append((start, last, kind))
+    if len(ranges) != EXPECTED_RANGES:
+        fail(f"unexpected Unicode range count {len(ranges)}")
+    return ranges
+
+
+def tokenizer_tables(tokenizer):
+    model = tokenizer.get("model", {})
+    if model.get("type") != "BPE" or model.get("byte_fallback"):
+        fail("unsupported tokenizer model")
+
+    vocab = model.get("vocab", {})
+    if len(vocab) != VOCAB or set(vocab.values()) != set(range(VOCAB)):
+        fail("tokenizer vocabulary is not a complete 49152-entry ID map")
+    tokens = [None] * VOCAB
+    for token, token_id in vocab.items():
+        tokens[token_id] = token
+
+    added = tokenizer.get("added_tokens", [])
+    if len(added) != SPECIALS or [item.get("id") for item in added] != list(
+        range(SPECIALS)
+    ):
+        fail("expected special tokens at IDs 0 through 16")
+    for item in added:
+        token_id = item["id"]
+        if not item.get("special") or item.get("content") != tokens[token_id]:
+            fail(f"invalid special token {token_id}")
+
+    encoded_bytes = byte_alphabet()
+    decoded_bytes = {character: byte for byte, character in encoded_bytes.items()}
+    pieces = []
+    for token_id, token in enumerate(tokens):
+        if token_id < SPECIALS:
+            piece = token.encode("utf-8")
+        else:
+            try:
+                piece = bytes(decoded_bytes[character] for character in token)
+            except KeyError as exc:
+                fail(f"token {token_id} contains a non-ByteLevel character {exc.args[0]!r}")
+        if not piece:
+            fail(f"token {token_id} is empty")
+        pieces.append(piece)
+
+    missing = 0xFFFFFFFF
+    byte_ids = [vocab.get(encoded_bytes[byte], missing) for byte in range(256)]
+
+    merges = []
+    for rank, entry in enumerate(model.get("merges", [])):
+        if isinstance(entry, str):
+            pair = entry.split(" ", 1)
+        else:
+            pair = entry
+        if len(pair) != 2:
+            fail(f"invalid merge at rank {rank}")
+        left, right = pair
+        try:
+            merges.append((vocab[left], vocab[right], vocab[left + right]))
+        except KeyError as exc:
+            fail(f"merge at rank {rank} references missing token {exc.args[0]!r}")
+    if len(merges) != 48900:
+        fail(f"unexpected merge count {len(merges)}")
+
+    return byte_ids, pieces, merges, unicode_ranges()
+
+
+def tensor_names():
+    names = {"model.embed_tokens.weight", "model.norm.weight"}
+    suffixes = (
+        "input_layernorm.weight",
+        "post_attention_layernorm.weight",
+        "self_attn.q_proj.weight",
+        "self_attn.k_proj.weight",
+        "self_attn.v_proj.weight",
+        "self_attn.o_proj.weight",
+        "mlp.gate_proj.weight",
+        "mlp.up_proj.weight",
+        "mlp.down_proj.weight",
+    )
+    for layer in range(LAYERS):
+        names.update(f"model.layers.{layer}.{suffix}" for suffix in suffixes)
+    return names
+
+
+class SafeTensors:
+    def __init__(self, path):
+        self.path = path
+        with path.open("rb") as source:
+            encoded_length = source.read(8)
+            if len(encoded_length) != 8:
+                fail("truncated safetensors header")
+            header_length = struct.unpack("<Q", encoded_length)[0]
+            if header_length > path.stat().st_size - 8:
+                fail("invalid safetensors header length")
+            self.metadata = json.loads(source.read(header_length))
+        self.data_offset = 8 + header_length
+        present = set(self.metadata) - {"__metadata__"}
+        if present != tensor_names():
+            fail("safetensors tensor names do not match SmolLM2-135M")
+
+    def bf16(self, name, shape):
+        metadata = self.metadata[name]
+        if metadata.get("dtype") != "BF16" or metadata.get("shape") != list(shape):
+            fail(f"unexpected tensor metadata for {name}")
+        first, last = metadata["data_offsets"]
+        count = math.prod(shape)
+        if first < 0 or last - first != count * 2:
+            fail(f"invalid tensor offsets for {name}")
+        raw = np.memmap(
+            self.path,
+            mode="r",
+            dtype="<u2",
+            offset=self.data_offset + first,
+            shape=(count,),
+        )
+        values = (raw.astype("<u4") << np.uint32(16)).view("<f4")
+        return values.reshape(shape)
+
+
+def write_norm(output, tensors, name):
+    values = tensors.bf16(name, (D,))
+    output.write(values.astype("<f4", copy=False).tobytes())
+
+
+def write_q4(output, tensors, name, shape):
+    rows, columns = shape
+    if columns % GROUP:
+        fail(f"{name} columns are not divisible by {GROUP}")
+    values = tensors.bf16(name, shape)
+    groups = columns // GROUP
+    for first in range(0, rows, 256):
+        chunk = values[first : first + 256].reshape(-1, groups, GROUP)
+        maximum = np.max(np.abs(chunk), axis=2)
+        scales = (maximum / np.float32(7.0)).astype(np.float16)
+        divisors = scales.astype(np.float32)[..., None]
+        normalized = np.divide(
+            chunk,
+            divisors,
+            out=np.zeros_like(chunk),
+            where=divisors != 0,
+        )
+        quantized = np.clip(np.rint(normalized), -7, 7).astype(np.int8)
+        shifted = (quantized + 8).astype(np.uint8)
+        packed = shifted[:, :, :16] | (shifted[:, :, 16:] << 4)
+        encoded = np.empty((chunk.shape[0], groups, 18), dtype=np.uint8)
+        encoded[:, :, :2] = scales.astype("<f2", copy=False).view(np.uint8).reshape(
+            chunk.shape[0], groups, 2
+        )
+        encoded[:, :, 2:] = packed
+        output.write(encoded.tobytes())
+
+
+def write_model(output_path, config, tokenizer, tensors):
+    byte_ids, pieces, merges, ranges = tokenizer_tables(tokenizer)
+    temporary = output_path
+    with temporary.open("wb") as output:
+        header = struct.pack(
+            "<8s14I2f",
+            b"SMOLQ4\0\0",
+            1,
+            D,
+            H,
+            LAYERS,
+            HEADS,
+            KV_HEADS,
+            VOCAB,
+            MAX_CONTEXT,
+            GROUP,
+            config["bos_token_id"],
+            config["eos_token_id"],
+            SPECIALS,
+            len(merges),
+            len(ranges),
+            config["rms_norm_eps"],
+            config["rope_theta"],
+        )
+        output.write(header)
+        output.write(bytes(256 - len(header)))
+        output.write(struct.pack("<256I", *byte_ids))
+        for piece in pieces:
+            output.write(struct.pack("<I", len(piece)))
+            output.write(piece)
+        for merge in merges:
+            output.write(struct.pack("<3I", *merge))
+        for item in ranges:
+            output.write(struct.pack("<3I", *item))
+        output.write(bytes((-output.tell()) % 64))
+
+        write_q4(output, tensors, "model.embed_tokens.weight", (VOCAB, D))
+        write_norm(output, tensors, "model.norm.weight")
+        for layer in range(LAYERS):
+            base = f"model.layers.{layer}."
+            write_norm(output, tensors, base + "input_layernorm.weight")
+            write_norm(output, tensors, base + "post_attention_layernorm.weight")
+            write_q4(output, tensors, base + "self_attn.q_proj.weight", (D, D))
+            write_q4(output, tensors, base + "self_attn.k_proj.weight", (KV_DIM, D))
+            write_q4(output, tensors, base + "self_attn.v_proj.weight", (KV_DIM, D))
+            write_q4(output, tensors, base + "self_attn.o_proj.weight", (D, D))
+            write_q4(output, tensors, base + "mlp.gate_proj.weight", (H, D))
+            write_q4(output, tensors, base + "mlp.up_proj.weight", (H, D))
+            write_q4(output, tensors, base + "mlp.down_proj.weight", (D, H))
+
+    size = temporary.stat().st_size
+    if size != EXPECTED_SIZE:
+        fail(f"unexpected output size {size}, expected {EXPECTED_SIZE}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--tokenizer", type=Path, required=True)
+    parser.add_argument("--weights", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+
+    config = load_json(args.config)
+    check_config(config)
+    tokenizer = load_json(args.tokenizer)
+    tensors = SafeTensors(args.weights)
+    write_model(args.output, config, tokenizer, tensors)
+    print(f"{args.output}: wrote {args.output.stat().st_size:,} bytes")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"export_model.py: {exc}") from exc

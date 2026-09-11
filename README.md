@@ -9,8 +9,10 @@ muita tikun tiedostoja.
 ## Kääntäminen
 
 `model.bin` on valmis 73,35 MiB:n SMOLQ4-malli. Sitä ei tallenneta Git-
-historiaan. `make` lataa puuttuvan mallin GitHub-julkaisusta, tarkistaa sen
-SHA-256-tiivisteen ja kääntää UEFI-tiedoston:
+historiaan. `make` lataa puuttuvat, tiettyyn revisioon lukitut lähdepainot
+[Hugging Facesta](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct),
+tarkistaa niiden SHA-256-tiivisteet, kvantisoi `model.bin`-tiedoston paikallisesti
+ja kääntää UEFI-tiedoston:
 
 ```sh
 make
@@ -22,12 +24,15 @@ Tulos on:
 dist/EFI/BOOT/BOOTX64.EFI
 ```
 
-Pelkän mallin voi hakea komennolla `make model`. Latausosoitteen voi tarvittaessa
-korvata esimerkiksi komennolla `make model MODEL_URL=https://.../model.bin`.
+Pelkän mallin voi rakentaa komennolla `make model`. Alkuperäinen 257 MiB:n
+Safetensors-tiedosto jää ignoroituun `.model-source`-välimuistiin, joten sitä ei
+tarvitse ladata jokaisella käännöskerralla.
 
-GNU/Linuxissa tarvitaan GCC, binutils, GNU Make, Python 3 ja curl. GNU-EFI löytyy joko
-järjestelmästä tai projektin pienestä `.tools/gnu-efi`-hakemistosta. Kontekstin
-ja vastauksen oletuspituuden voi asettaa käännösvaiheessa:
+GNU/Linuxissa tarvitaan GCC, binutils, GNU Make ja Python 3. Mallin paikalliseen
+rakentamiseen tarvitaan lisäksi curl, NumPy ja Unicode 15.1 -tiedot (esimerkiksi
+Python 3.13). GNU-EFI löytyy joko järjestelmästä tai projektin pienestä
+`.tools/gnu-efi`-hakemistosta. Kontekstin ja vastauksen oletuspituuden voi asettaa
+käännösvaiheessa:
 
 ```sh
 make CONTEXT=2048 TOKENS=128

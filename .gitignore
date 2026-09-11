@@ -1,5 +1,6 @@
 /model.bin
 /model.bin.part
+/.model-source/
 __pycache__/
 /.tools/
 /.build/
