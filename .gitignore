@@ -1,0 +1,6 @@
+/model.bin
+/model.bin.part
+__pycache__/
+/.tools/
+/.build/
+/dist/
