@@ -4,12 +4,12 @@ CURL ?= curl
 CONTEXT ?= 1024
 TOKENS ?= 128
 
-MODEL_REV = 12fd25f77366fa6b3b4b768ec3050bf629380bac
-MODEL_BASE_URL ?= https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct/resolve/$(MODEL_REV)
-MODEL_SOURCE_DIR ?= .model-source
-MODEL_SHA256 = 9f8b9b089b6a0fba150438567607e6969cc1ffe8e4e8d01895ecb6d067675a74
-MODEL_SOURCE_SHA256 = 5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c
-CONFIG_SHA256 = 8eb740e8bbe4cff95ea7b4588d17a2432deb16e8075bc5828ff7ba9be94d982a
+MODEL_REV = 31b70e2e869a7173562077fd711b654946d38674
+MODEL_BASE_URL ?= https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct/resolve/$(MODEL_REV)
+MODEL_SOURCE_DIR ?= .model-source/SmolLM2-1.7B-Instruct
+MODEL_SHA256 = a309d378bc03490e65f8e88a76ee2482f85751a248731ec3663b1647447b7620
+MODEL_SOURCE_SHA256 = f55217be716b6a997b97b9d8d7eb6fad02e00858f5010ec24f64603c3a98a0e8
+CONFIG_SHA256 = 994f50b16abb4ae00880baefe03c10260b5bd608d2bf586f7056ca05a534feea
 TOKENIZER_SHA256 = 9ca9acddb6525a194ec8ac7a87f24fbba7232a9a15ffa1af0c1224fcd888e47c
 
 GNU_EFI_URL ?= https://snapshot.debian.org/archive/debian/20260127T023013Z/pool/main/g/gnu-efi/gnu-efi_3.0.18-1%2Bdeb13u1_amd64.deb
@@ -30,12 +30,11 @@ EFI_CFLAGS = -O3 -std=c11 -Wall -Wextra -Wpedantic -ffreestanding -fno-builtin \
 	-fno-unwind-tables -m64 -mno-red-zone -mno-avx -msse2 -mfpmath=sse \
 	-mno-80387 -mno-mmx -maccumulate-outgoing-args -DGNU_EFI_USE_MS_ABI \
 	-I$(EFI_ROOT)/include/efi -I$(EFI_ROOT)/include/efi/x86_64
-OBJECTS = .build/main.o .build/platform.o .build/lib.o .build/math.o \
-	.build/fp.o .build/payload.o
+OBJECTS = .build/main.o .build/platform.o .build/lib.o .build/math.o .build/fp.o
 BOOT = dist/EFI/BOOT/BOOTX64.EFI
 
-.PHONY: all clean model model-check FORCE
-all: $(BOOT)
+.PHONY: all clean model model-check test FORCE
+all: $(BOOT) dist/model.bin
 
 model: model.bin
 
@@ -63,7 +62,7 @@ $(MODEL_SOURCE_DIR)/model.safetensors: | model-check $(MODEL_SOURCE_DIR)
 	echo "$(MODEL_SOURCE_SHA256)  $$part" | sha256sum --check -; \
 	mv "$$part" "$@"; trap - EXIT
 
-model.bin: tools/export_model.py $(MODEL_SOURCE_DIR)/config.json \
+model.bin: tools/export_model.py Makefile $(MODEL_SOURCE_DIR)/config.json \
 	$(MODEL_SOURCE_DIR)/tokenizer.json $(MODEL_SOURCE_DIR)/model.safetensors
 	@set -eu; \
 	part="$@.part"; \
@@ -98,16 +97,14 @@ $(GNU_EFI_STAMP):
 .build/%.o: baremetal/%.c baremetal/runtime.h Makefile $(EFI_BOOTSTRAP) | .build
 	$(CC) $(EFI_CFLAGS) -c $< -o $@
 
-.build/main.o: neural.c
+.build/main.o: neural.c .build/config.h
 
 .build/fp.o: baremetal/fp.S | .build
 	$(CC) -m64 -c $< -o $@
 
-.build/payload.bin: model.bin baremetal/image.py Makefile FORCE | .build
-	$(PYTHON) baremetal/image.py --context $(CONTEXT) --tokens $(TOKENS) --output $@
-
-.build/payload.o: baremetal/payload.S .build/payload.bin
-	$(CC) -m64 -c $< -o $@
+.build/config.h: model.bin baremetal/image.py Makefile FORCE | .build
+	$(PYTHON) baremetal/image.py --context $(CONTEXT) --tokens $(TOKENS) \
+		--sha256 $(MODEL_SHA256) --output $@
 
 .build/kernel.so: $(OBJECTS) $(EFI_BOOTSTRAP)
 	ld -nostdlib -znocombreloc -shared -Bsymbolic --no-undefined \
@@ -120,6 +117,23 @@ $(BOOT): .build/kernel.so
 		-j .rela -j .reloc --target=efi-app-x86_64 $< $@.tmp
 	mv $@.tmp $@
 	sha256sum $@
+
+dist/model.bin: model.bin
+	mkdir -p $(@D)
+	cp $< $@.tmp
+	mv $@.tmp $@
+
+.build/test-inference: tests/inference.c neural.c baremetal/runtime.h baremetal/math.c baremetal/fp.S Makefile | .build
+	$(CC) -O3 -std=c11 -Wall -Wextra -Wpedantic -fno-builtin \
+		-m64 -mno-avx -msse2 -mfpmath=sse -mno-80387 -mno-mmx \
+		tests/inference.c baremetal/math.c baremetal/fp.S -o $@
+
+.build/test-file-loader: tests/file_loader.c baremetal/platform.c baremetal/runtime.h Makefile $(EFI_BOOTSTRAP) | .build
+	$(CC) $(EFI_CFLAGS) tests/file_loader.c -o $@
+
+test: all .build/test-inference .build/test-file-loader
+	.build/test-file-loader
+	$(PYTHON) tests/verify.py
 
 clean:
 	rm -rf .build dist

@@ -1,4 +1,4 @@
-/* UEFI supplies console, USB keyboard, timers and RAM allocation. No storage I/O.
+/* UEFI supplies console, USB keyboard, timers, RAM and boot-volume file access.
  * Boot Services deliberately remain active for the firmware's device drivers. */
 #include <efi.h>
 #include "runtime.h"
@@ -6,10 +6,11 @@
 volatile uint64_t bm_ticks;
 static EFI_SYSTEM_TABLE *system_table;
 static EFI_BOOT_SERVICES *services;
+static EFI_HANDLE image_handle;
 static EFI_EVENT timer;
 
 EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *table) {
-    (void)image;
+    image_handle=image;
     system_table=table;
     services=table->BootServices;
     bm_main();
@@ -102,6 +103,49 @@ void bm_reserve_heap(size_t bytes) {
     if (EFI_ERROR(services->AllocatePages(AllocateAnyPages,EfiLoaderData,pages,&address)))
         bm_panic("not enough RAM for context; use more RAM or a smaller CONTEXT");
     bm_heap_init((uintptr_t)address,(uintptr_t)address+pages*4096);
+}
+/* Only the boot volume is used. Keep the packed weights in one RAM allocation;
+ * all file handles are closed before inference starts. */
+const void *bm_load_model(size_t bytes) {
+    EFI_GUID loaded_guid=EFI_LOADED_IMAGE_PROTOCOL_GUID;
+    EFI_GUID fs_guid=EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+    EFI_GUID info_guid=EFI_FILE_INFO_ID;
+    EFI_LOADED_IMAGE_PROTOCOL *loaded;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *fs;
+    EFI_FILE_PROTOCOL *root, *file;
+    if (EFI_ERROR(services->HandleProtocol(image_handle,&loaded_guid,(void **)&loaded)) ||
+        EFI_ERROR(services->HandleProtocol(loaded->DeviceHandle,&fs_guid,(void **)&fs)))
+        bm_panic("cannot open boot filesystem");
+    if (EFI_ERROR(fs->OpenVolume(fs,&root))) bm_panic("cannot open boot volume");
+    if (EFI_ERROR(root->Open(root,&file,L"\\model.bin",EFI_FILE_MODE_READ,0)))
+        bm_panic("model.bin missing from USB root; copy dist/model.bin to the boot USB");
+    /* Fixed name model.bin needs only 20 bytes beyond the fixed EFI_FILE_INFO. */
+    union { EFI_FILE_INFO info; unsigned char bytes[512]; } info_buffer;
+    UINTN info_size=sizeof(info_buffer);
+    EFI_FILE_INFO *info=&info_buffer.info;
+    if (EFI_ERROR(file->GetInfo(file,&info_guid,&info_size,info)) ||
+        info_size<SIZE_OF_EFI_FILE_INFO || (info->Attribute&EFI_FILE_DIRECTORY) ||
+        info->FileSize!=bytes)
+        bm_panic("wrong model.bin size; copy the SmolLM2-1.7B model built with this EFI");
+    EFI_PHYSICAL_ADDRESS address=0;
+    if (bytes>SIZE_MAX-4095 ||
+        EFI_ERROR(services->AllocatePages(AllocateAnyPages,EfiLoaderData,(bytes+4095)/4096,&address)))
+        bm_panic("not enough RAM for model");
+    unsigned char *data=(unsigned char *)(uintptr_t)address;
+    bm_puts("Loading model.bin from USB");
+    for (size_t at=0,progress=0;at<bytes;) {
+        UINTN chunk=bytes-at>1024*1024 ? 1024*1024 : bytes-at;
+        UINTN count=chunk;
+        if (EFI_ERROR(file->Read(file,&count,data+at)) || !count || count>chunk)
+            bm_panic("cannot read model.bin; check the USB stick");
+        at+=count;
+        if (at-progress>=64*1024*1024) { bm_putc('.'); progress=at; }
+    }
+    EFI_STATUS file_status=file->Close(file);
+    EFI_STATUS root_status=root->Close(root);
+    if (EFI_ERROR(file_status) || EFI_ERROR(root_status)) bm_panic("cannot close model file");
+    bm_puts(" OK\n");
+    return data;
 }
 static uint32_t getch(void) {
     for (;;) {

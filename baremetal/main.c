@@ -1,5 +1,6 @@
 /* The UEFI application's tokenizer, transformer and interactive console. */
 #include "../neural.c"
+#include "../.build/config.h"
 
 static void elapsed(uint64_t ticks) {
     bm_uint(ticks/100); bm_putc('.');
@@ -76,27 +77,20 @@ _Noreturn void bm_main(void) {
     bm_init();
     bm_puts("Smol bare metal / x86-64 UEFI\nUEFI USB -> RAM -> neural.c\n");
     math_check();
-    size_t payload_size=(size_t)(bm_payload_end-bm_payload_start);
-    if (payload_size<sizeof(BootHeader)) bm_panic("truncated boot payload");
-    BootHeader h; memcpy(&h,bm_payload_start,sizeof(h));
-    if (memcmp(h.magic,"SMOLRAM\0",8) || h.version!=2 || h.offset!=64 ||
-        h.bytes<256 || h.bytes>100000000 || h.context<64 || h.context>MAXCTX ||
-        !h.tokens || h.tokens>MAXCTX || payload_size!=(size_t)h.offset+h.bytes)
-        bm_panic("invalid boot payload header");
-    size_t state_bytes=sizeof(State)+(size_t)h.context*(2*L*KD+NH+HS)*4+sizeof(Model);
+    size_t state_bytes=sizeof(State)+(size_t)BOOT_CONTEXT*(2*L*KD+NH+HS)*4+sizeof(Model);
     bm_reserve_heap(state_bytes+16*1024*1024);
-    bm_puts("Model in RAM: "); bm_uint(h.bytes); bm_puts(" bytes; no disk access.\n");
+    const void *data=bm_load_model(MODEL_BYTES);
+    bm_puts("Model in RAM: "); bm_uint(MODEL_BYTES); bm_puts(" bytes; no more disk access.\n");
     uint64_t began=bm_ticks;
-    const void *data=bm_payload_start+h.offset;
     bm_puts("Checking model CRC32... ");
-    if (bm_crc32(data,h.bytes)!=h.crc) bm_panic("model CRC32 mismatch");
+    if (bm_crc32(data,MODEL_BYTES)!=MODEL_CRC32) bm_panic("model CRC32 mismatch");
     bm_puts("OK (check "); elapsed(bm_ticks-began); bm_puts("s)\n");
-    Model *m=alloc(sizeof(*m)); init_model(m,data,h.bytes);
-    State *s=new_state(m,(int)h.context);
+    Model *m=alloc(sizeof(*m)); init_model(m,data,MODEL_BYTES);
+    State *s=new_state(m,BOOT_CONTEXT);
     int *ids=alloc(MAXCTX*sizeof(int));
     char line[4096];
-    int limit=(int)h.tokens;
-    bm_puts("SmolLM2-135M-Instruct Q4; context "); bm_uint(h.context); bm_puts(" tokens.\n");
+    int limit=BOOT_TOKENS;
+    bm_puts("SmolLM2-1.7B-Instruct Q4; context "); bm_uint(BOOT_CONTEXT); bm_puts(" tokens.\n");
     help();
     for (;;) {
         bm_puts("YOU> ");
@@ -109,7 +103,7 @@ _Noreturn void bm_main(void) {
         if (!strcmp(line,"/help")) { help(); continue; }
         if (!strcmp(line,"/selftest")) { selftest(m); continue; }
         if (!strcmp(line,"/stats")) {
-            bm_puts("Context "); bm_uint((unsigned)s->pos); bm_putc('/'); bm_uint(h.context);
+            bm_puts("Context "); bm_uint((unsigned)s->pos); bm_putc('/'); bm_uint(BOOT_CONTEXT);
             bm_puts("; free heap "); bm_uint(bm_heap_available()); bm_puts(" bytes; uptime ");
             elapsed(bm_ticks); bm_puts("s\n"); continue;
         }

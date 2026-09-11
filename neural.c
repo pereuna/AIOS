@@ -1,10 +1,10 @@
-/* SmolLM2-135M-Instruct inference for the x86-64 UEFI image.
- * Q4 weights stay packed in the executable and are read directly from RAM. */
+/* SmolLM2-1.7B-Instruct inference for the x86-64 UEFI application.
+ * Q4 weights are loaded from USB once and read directly from RAM. */
 #include "baremetal/runtime.h"
 #include <emmintrin.h>
 
-enum { D=576, H=1536, L=30, NH=9, NK=3, V=49152, HS=64, KD=192,
-       G=32, BLOCK=18, MAXCTX=8192, HASH=131072 };
+enum { D=2048, H=8192, L=24, NH=32, NK=32, V=49152, HS=64, KD=2048,
+       G=32, BLOCK=18, MAXCTX=8192, HASH=131072, MODEL_BYTES=964120960 };
 typedef struct { const unsigned char *p; uint32_t n; } Word;
 typedef struct { uint32_t a, b, out, rank; } Merge;
 typedef struct { const float *n1, *n2; const unsigned char *q,*k,*v,*o,*gate,*up,*down; } Layer;
@@ -41,7 +41,7 @@ static Merge *pair(Model *m, uint32_t a, uint32_t b) {
 }
 static void init_model(Model *m, const void *data, size_t size) {
     if (sizeof(float)!=4 || u32("\1\0\0\0")!=1) die("requires little-endian IEEE float32 host");
-    if (size<256 || size>100000000) die("invalid model size");
+    if (size!=MODEL_BYTES) die("invalid SmolLM2-1.7B model size");
     m->size=size; m->map=data; m->end=m->map+size;
     const unsigned char *p=m->map;
     if (memcmp(p,"SMOLQ4\0\0",8)) die("bad model magic");

@@ -14,18 +14,18 @@ except ImportError as exc:
     raise SystemExit("export_model.py requires NumPy") from exc
 
 
-D = 576
-H = 1536
-LAYERS = 30
-HEADS = 9
-KV_HEADS = 3
-KV_DIM = 192
+D = 2048
+H = 8192
+LAYERS = 24
+HEADS = 32
+KV_HEADS = 32
+KV_DIM = 2048
 VOCAB = 49152
 MAX_CONTEXT = 8192
 GROUP = 32
 SPECIALS = 17
 EXPECTED_RANGES = 807
-EXPECTED_SIZE = 76912256
+EXPECTED_SIZE = 964120960
 
 # Unicode 15.1 PropList.txt, property White_Space.
 WHITE_SPACE = (
@@ -63,8 +63,11 @@ def check_config(config):
         "bos_token_id": 1,
         "eos_token_id": 2,
         "rms_norm_eps": 1e-5,
-        "rope_theta": 100000,
+        "rope_theta": 130000,
         "tie_word_embeddings": True,
+        "attention_bias": False,
+        "mlp_bias": False,
+        "rope_scaling": None,
     }
     for name, value in expected.items():
         if config.get(name) != value:
@@ -208,7 +211,7 @@ class SafeTensors:
         self.data_offset = 8 + header_length
         present = set(self.metadata) - {"__metadata__"}
         if present != tensor_names():
-            fail("safetensors tensor names do not match SmolLM2-135M")
+            fail("safetensors tensor names do not match SmolLM2-1.7B")
 
     def bf16(self, name, shape):
         metadata = self.metadata[name]

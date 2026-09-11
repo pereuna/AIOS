@@ -1,7 +1,7 @@
 # SMOLQ4 v1
 
 All integers and floating-point values are little-endian. The loader accepts
-only SmolLM2-135M-Instruct's exact dimensions. This is a deliberately small
+only SmolLM2-1.7B-Instruct's exact dimensions. This is a deliberately small
 private format, not GGUF and not compatible with llama.cpp.
 
 ## Header: 256 bytes
@@ -10,11 +10,11 @@ private format, not GGUF and not compatible with llama.cpp.
 | --- | --- | --- |
 | 0 | 8 bytes | `SMOLQ4\0\0` |
 | 8 | uint32 | version = 1 |
-| 12 | uint32 | hidden dimension = 576 |
-| 16 | uint32 | intermediate dimension = 1536 |
-| 20 | uint32 | layers = 30 |
-| 24 | uint32 | query heads = 9 |
-| 28 | uint32 | KV heads = 3 |
+| 12 | uint32 | hidden dimension = 2048 |
+| 16 | uint32 | intermediate dimension = 8192 |
+| 20 | uint32 | layers = 24 |
+| 24 | uint32 | query heads = 32 |
+| 28 | uint32 | KV heads = 32 |
 | 32 | uint32 | vocabulary = 49152 |
 | 36 | uint32 | maximum context = 8192 |
 | 40 | uint32 | quantization group = 32 |
@@ -24,7 +24,7 @@ private format, not GGUF and not compatible with llama.cpp.
 | 56 | uint32 | number of BPE merges |
 | 60 | uint32 | number of Unicode ranges |
 | 64 | float32 | RMSNorm epsilon = 1e-5 |
-| 68 | float32 | RoPE theta = 100000 |
+| 68 | float32 | RoPE theta = 130000 |
 | 72–255 | bytes | zero padding |
 
 ## Tokenizer
@@ -71,11 +71,11 @@ the same scale.
 
 Weight order:
 
-1. Embedding `[49152, 576]`, Q4. Also used as the output projection.
-2. Final RMSNorm `[576]`, FP32.
-3. For each layer 0 through 29: input RMSNorm and post-attention RMSNorm,
-   both `[576]` FP32; then Q `[576,576]`, K `[192,576]`, V `[192,576]`,
-   O `[576,576]`, gate `[1536,576]`, up `[1536,576]`, down `[576,1536]`, all Q4.
+1. Embedding `[49152, 2048]`, Q4. Also used as the output projection.
+2. Final RMSNorm `[2048]`, FP32.
+3. For each layer 0 through 23: input RMSNorm and post-attention RMSNorm,
+   both `[2048]` FP32; then Q, K, V and O `[2048,2048]`,
+   gate and up `[8192,2048]`, down `[2048,8192]`, all Q4.
 
 There are no tensor names, directory entries, biases or duplicate LM-head
 weights in the binary. The stored model was exported after its source shapes
@@ -84,15 +84,27 @@ expected total file length.
 
 ## Forward state
 
-Each token performs embedding lookup, 30 repetitions of attention and MLP
+Each token performs embedding lookup, 24 repetitions of attention and MLP
 with residual additions, final RMSNorm and tied output projection.
 Prompt positions except the last omit the unused output projection.
 
 RoPE rotates the first and second halves of each 64-element Q/K head;
-it does not rotate adjacent coordinate pairs. GQA shares one K/V head among
-three query heads. Keys and values use `[layer, position, kv_head, coordinate]`
+it does not rotate adjacent coordinate pairs. Each query head has its own K/V
+head (ordinary multi-head attention). Keys and values use `[layer, position, kv_head, coordinate]`
 FP32 storage. Attention only reads positions up to and including the current
 position, so a separate causal mask is unnecessary.
 
 The UEFI program uses greedy decoding: it selects the largest finite logit.
 The compiled application validates intermediate values before decoding.
+
+## USB loading
+
+The 964,120,960-byte file lives at `\\model.bin` on the EFI application's own
+boot volume. UEFI Simple File System and File protocols load it into one
+AllocatePages allocation, reading at most 1 MiB per call and accepting short
+reads until the expected size is reached. Unexpected EOF and size mismatches
+are fatal. Files are closed before CRC32 verification and inference.
+
+Only the expected CRC32 and context/output defaults are compiled into the EFI
+image; there is no embedded model or additional boot-payload format. The build
+also verifies the model's pinned SHA-256 before generating those settings.

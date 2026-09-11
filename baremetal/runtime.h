@@ -31,6 +31,7 @@ void bm_fp_prepare(void);
 void bm_check_finite(const char *, const float *, size_t, int, int);
 _Noreturn void bm_main(void);
 void bm_reserve_heap(size_t);
+const void *bm_load_model(size_t);
 void bm_heap_init(uintptr_t, uintptr_t);
 size_t bm_heap_available(void);
 void bm_putc(char);
@@ -43,11 +44,4 @@ uint32_t bm_crc32(const void *, size_t);
 _Noreturn void bm_panic(const char *);
 _Noreturn void bm_shutdown(void);
 extern volatile uint64_t bm_ticks;
-extern const unsigned char bm_payload_start[], bm_payload_end[];
-
-typedef struct {
-    char magic[8];
-    uint32_t version, bytes, offset, crc, context, tokens;
-} BootHeader;
-_Static_assert(sizeof(BootHeader)==32, "boot payload ABI");
 #endif
