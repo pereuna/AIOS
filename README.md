@@ -28,11 +28,14 @@ Pelkän mallin voi rakentaa komennolla `make model`. Alkuperäinen 257 MiB:n
 Safetensors-tiedosto jää ignoroituun `.model-source`-välimuistiin, joten sitä ei
 tarvitse ladata jokaisella käännöskerralla.
 
-GNU/Linuxissa tarvitaan GCC, binutils, GNU Make ja Python 3. Mallin paikalliseen
-rakentamiseen tarvitaan lisäksi curl, NumPy ja Unicode 15.1 -tiedot (esimerkiksi
-Python 3.13). GNU-EFI löytyy joko järjestelmästä tai projektin pienestä
-`.tools/gnu-efi`-hakemistosta. Kontekstin ja vastauksen oletuspituuden voi asettaa
-käännösvaiheessa:
+GNU/Linuxissa tarvitaan GCC, binutils, GNU Make, tar, curl ja Python 3. Mallin
+paikalliseen rakentamiseen tarvitaan lisäksi NumPy ja Unicode 15.1 -tiedot
+(esimerkiksi Python 3.13). Make käyttää järjestelmän GNU-EFIä, jos se on
+asennettu. Muuten se hakee pinnatun x86-64-paketin Debian Snapshotista ja purkaa
+sen ilman pääkäyttäjän oikeuksia `.tools/gnu-efi`-hakemistoon. Oman asennuksen
+voi valita komennolla `make EFI_ROOT=/polku/prefixiin`.
+
+Kontekstin ja vastauksen oletuspituuden voi asettaa käännösvaiheessa:
 
 ```sh
 make CONTEXT=2048 TOKENS=128
