@@ -221,8 +221,14 @@ static __m128 dot16(__m128i q, const float *x) {
     return _mm_add_ps(_mm_add_ps(_mm_mul_ps(a,_mm_loadu_ps(x)),_mm_mul_ps(b,_mm_loadu_ps(x+4))),
                       _mm_add_ps(_mm_mul_ps(c,_mm_loadu_ps(x+8)),_mm_mul_ps(d,_mm_loadu_ps(x+12))));
 }
-static void matvec(float *out, const unsigned char *w, const float *x, int rows, int cols) {
-    for (int row=0;row<rows;row++) {
+typedef struct { float *out; const unsigned char *w; const float *x; int cols; } MatvecJob;
+static void matvec_rows(void *argument, int first, int last) {
+    const MatvecJob *job=argument;
+    float *out=job->out;
+    const unsigned char *w=job->w;
+    const float *x=job->x;
+    int cols=job->cols;
+    for (int row=first;row<last;row++) {
         const unsigned char *p=w+(size_t)row*(cols/G)*BLOCK;
         __m128 sum=_mm_setzero_ps();
         __m128i mask=_mm_set1_epi8(15);
@@ -234,6 +240,10 @@ static void matvec(float *out, const unsigned char *w, const float *x, int rows,
         }
         float s[4]; _mm_storeu_ps(s,sum); out[row]=(s[0]+s[1])+(s[2]+s[3]);
     }
+}
+static void matvec(float *out, const unsigned char *w, const float *x, int rows, int cols) {
+    MatvecJob job={out,w,x,cols};
+    bm_parallel_rows(matvec_rows,&job,rows);
 }
 static void embedding(float *x, const unsigned char *p) {
     for (int j=0;j<D;j+=G,p+=BLOCK) {

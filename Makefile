@@ -1,4 +1,5 @@
 CC ?= cc
+OBJCOPY ?= objcopy
 PYTHON ?= python3
 CURL ?= curl
 CONTEXT ?= 1024
@@ -30,16 +31,16 @@ EFI_CFLAGS = -O3 -std=c11 -Wall -Wextra -Wpedantic -ffreestanding -fno-builtin \
 	-fno-unwind-tables -m64 -mno-red-zone -mno-avx -msse2 -mfpmath=sse \
 	-mno-80387 -mno-mmx -maccumulate-outgoing-args -DGNU_EFI_USE_MS_ABI \
 	-I$(EFI_ROOT)/include/efi -I$(EFI_ROOT)/include/efi/x86_64
-OBJECTS = .build/main.o .build/platform.o .build/lib.o .build/math.o .build/fp.o
+OBJECTS = .build/main.o .build/platform.o .build/mp.o .build/lib.o .build/math.o .build/fp.o
 BOOT = dist/EFI/BOOT/BOOTX64.EFI
 
-.PHONY: all clean model model-check test FORCE
+.PHONY: all clean model model-check test bench FORCE
 all: $(BOOT) dist/model.bin
 
 model: model.bin
 
 model-check:
-	@$(PYTHON) -c 'import numpy, unicodedata; assert unicodedata.unidata_version == "15.1.0", "Python Unicode data must be version 15.1.0"'
+	@$(PYTHON) -c 'from tools.export_model import unicode_ranges; unicode_ranges()'
 
 $(MODEL_SOURCE_DIR):
 	mkdir -p $@
@@ -62,7 +63,7 @@ $(MODEL_SOURCE_DIR)/model.safetensors: | model-check $(MODEL_SOURCE_DIR)
 	echo "$(MODEL_SOURCE_SHA256)  $$part" | sha256sum --check -; \
 	mv "$$part" "$@"; trap - EXIT
 
-model.bin: tools/export_model.py Makefile $(MODEL_SOURCE_DIR)/config.json \
+model.bin: tools/export_model.py tools/unicode-15.1.0.txt Makefile $(MODEL_SOURCE_DIR)/config.json \
 	$(MODEL_SOURCE_DIR)/tokenizer.json $(MODEL_SOURCE_DIR)/model.safetensors
 	@set -eu; \
 	part="$@.part"; \
@@ -98,6 +99,7 @@ $(GNU_EFI_STAMP):
 	$(CC) $(EFI_CFLAGS) -c $< -o $@
 
 .build/main.o: neural.c .build/config.h
+.build/mp.o .build/platform.o: baremetal/mp.h
 
 .build/fp.o: baremetal/fp.S | .build
 	$(CC) -m64 -c $< -o $@
@@ -113,8 +115,8 @@ $(GNU_EFI_STAMP):
 
 $(BOOT): .build/kernel.so
 	mkdir -p $(@D)
-	objcopy -j .text -j .data -j .rodata -j .dynamic -j .dynsym -j .rel \
-		-j .rela -j .reloc --target=efi-app-x86_64 $< $@.tmp
+	$(OBJCOPY) -j .text -j .data -j .rodata -j .dynamic -j .dynsym -j .rel \
+		-j .rela -j .reloc -O pei-x86-64 --subsystem=10 $< $@.tmp
 	mv $@.tmp $@
 	sha256sum $@
 
@@ -123,17 +125,26 @@ dist/model.bin: model.bin
 	cp $< $@.tmp
 	mv $@.tmp $@
 
-.build/test-inference: tests/inference.c neural.c baremetal/runtime.h baremetal/math.c baremetal/fp.S Makefile | .build
-	$(CC) -O3 -std=c11 -Wall -Wextra -Wpedantic -fno-builtin \
-		-m64 -mno-avx -msse2 -mfpmath=sse -mno-80387 -mno-mmx \
-		tests/inference.c baremetal/math.c baremetal/fp.S -o $@
+MP_TEST_SOURCES = tests/mp_firmware.c baremetal/mp.c baremetal/fp.S
+MP_TEST_DEPS = $(MP_TEST_SOURCES) tests/mp_firmware.h baremetal/mp.h baremetal/runtime.h
 
-.build/test-file-loader: tests/file_loader.c baremetal/platform.c baremetal/runtime.h Makefile $(EFI_BOOTSTRAP) | .build
+.build/test-inference: tests/inference.c neural.c baremetal/math.c $(MP_TEST_DEPS) Makefile $(EFI_BOOTSTRAP) | .build
+	$(CC) $(EFI_CFLAGS) -pthread tests/inference.c baremetal/math.c $(MP_TEST_SOURCES) -o $@
+
+.build/test-parallel: tests/parallel.c $(MP_TEST_DEPS) Makefile $(EFI_BOOTSTRAP) | .build
+	$(CC) $(EFI_CFLAGS) -pthread tests/parallel.c $(MP_TEST_SOURCES) -o $@
+
+.build/test-file-loader: tests/file_loader.c baremetal/platform.c baremetal/mp.h baremetal/runtime.h Makefile $(EFI_BOOTSTRAP) | .build
 	$(CC) $(EFI_CFLAGS) tests/file_loader.c -o $@
 
-test: all .build/test-inference .build/test-file-loader
+test: all .build/test-inference .build/test-file-loader .build/test-parallel
+	$(PYTHON) -m unittest discover -s tests -p 'test_*.py'
 	.build/test-file-loader
+	.build/test-parallel
 	$(PYTHON) tests/verify.py
+
+bench: model.bin .build/test-inference
+	$(PYTHON) tests/bench.py
 
 clean:
 	rm -rf .build dist

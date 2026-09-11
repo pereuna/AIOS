@@ -2,6 +2,7 @@
  * Boot Services deliberately remain active for the firmware's device drivers. */
 #include <efi.h>
 #include "runtime.h"
+#include "mp.h"
 
 volatile uint64_t bm_ticks;
 static EFI_SYSTEM_TABLE *system_table;
@@ -74,10 +75,12 @@ void bm_check_finite(const char *where, const float *values, size_t count, int p
     }
 }
 _Noreturn void bm_panic(const char *s) {
+    bm_parallel_end();
     bm_puts("\nPANIC: "); bm_puts(s); bm_puts("\nRestart the machine to retry.\n");
     for (;;) services->Stall(1000000);
 }
 _Noreturn void bm_shutdown(void) {
+    bm_parallel_end();
     bm_puts("Goodbye.\n");
     system_table->RuntimeServices->ResetSystem(EfiResetShutdown,EFI_SUCCESS,0,NULL);
     for (;;) services->Stall(1000000);
@@ -95,6 +98,7 @@ void bm_init(void) {
     if (EFI_ERROR(services->CreateEvent(EVT_TIMER|EVT_NOTIFY_SIGNAL,TPL_CALLBACK,tick,NULL,&timer)) ||
         EFI_ERROR(services->SetTimer(timer,TimerPeriodic,100000)))
         bm_panic("cannot create UEFI timer");
+    bm_mp_init(services);
 }
 void bm_reserve_heap(size_t bytes) {
     EFI_PHYSICAL_ADDRESS address=0;

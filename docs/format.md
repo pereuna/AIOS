@@ -44,6 +44,11 @@ Immediately after the header:
    Sorted nonoverlapping ranges; omitted code points have category 0.
 5. Zero padding to the next 64-byte boundary.
 
+The 807 Unicode ranges are pinned to Unicode 15.1.0 in
+`tools/unicode-15.1.0.txt`. The exporter reads this table rather than the build
+host's Unicode database, preserving tokenization and the model's SHA-256
+across Python versions.
+
 Special tokens are recognized before normal pre-tokenization. Number code
 points are individually isolated first. Remaining spans use the original
 GPT-2 ByteLevel splitting rules, followed by BPE with an explicit pair/rank

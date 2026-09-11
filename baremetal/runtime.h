@@ -27,6 +27,15 @@ float bm_ldexpf(float, int);
 #define isfinite(x) __builtin_isfinite(x)
 
 void bm_init(void);
+enum { BM_MAX_THREADS=4 };
+typedef void (*bm_row_task)(void *, int, int);
+unsigned bm_parallel_begin(void);
+void bm_parallel_end(void);
+void bm_parallel_rows(bm_row_task, void *, int);
+unsigned bm_parallel_count(void);
+unsigned bm_parallel_limit(void);
+void bm_parallel_set_limit(unsigned);
+const char *bm_parallel_mode(void);
 void bm_fp_prepare(void);
 void bm_check_finite(const char *, const float *, size_t, int, int);
 _Noreturn void bm_main(void);

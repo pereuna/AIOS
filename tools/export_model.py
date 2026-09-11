@@ -5,13 +5,15 @@ import argparse
 import json
 import math
 import struct
-import unicodedata
 from pathlib import Path
 
 try:
     import numpy as np
 except ImportError as exc:
-    raise SystemExit("export_model.py requires NumPy") from exc
+    raise SystemExit(
+        f"export_model.py requires a working NumPy installation: {exc}. "
+        "On Debian/Devuan, install the python3-numpy system package."
+    ) from exc
 
 
 D = 2048
@@ -26,20 +28,6 @@ GROUP = 32
 SPECIALS = 17
 EXPECTED_RANGES = 807
 EXPECTED_SIZE = 964120960
-
-# Unicode 15.1 PropList.txt, property White_Space.
-WHITE_SPACE = (
-    (0x0009, 0x000D),
-    (0x0020, 0x0020),
-    (0x0085, 0x0085),
-    (0x00A0, 0x00A0),
-    (0x1680, 0x1680),
-    (0x2000, 0x200A),
-    (0x2028, 0x2029),
-    (0x202F, 0x202F),
-    (0x205F, 0x205F),
-    (0x3000, 0x3000),
-)
 
 
 def fail(message):
@@ -89,32 +77,20 @@ def byte_alphabet():
 
 
 def unicode_ranges():
-    if unicodedata.unidata_version != "15.1.0":
-        fail(
-            "Python must provide Unicode 15.1.0 data; found "
-            + unicodedata.unidata_version
-        )
-
-    whitespace = set()
-    for first, last in WHITE_SPACE:
-        whitespace.update(range(first, last + 1))
-
+    # Tokenizer categories are pinned model data, independent of host Python.
+    path = Path(__file__).with_name("unicode-15.1.0.txt")
     ranges = []
-    start = last = kind = None
-    for codepoint in range(0x110000):
-        category = unicodedata.category(chr(codepoint))[0]
-        current = 1 if category == "L" else 2 if category == "N" else 0
-        if codepoint in whitespace:
-            current = 3
-        if current == kind and current and codepoint == last + 1:
-            last = codepoint
+    previous = -1
+    for line in path.read_text(encoding="ascii").splitlines():
+        line = line.partition("#")[0].strip()
+        if not line:
             continue
-        if kind:
-            ranges.append((start, last, kind))
-        start = last = codepoint
-        kind = current
-    if kind:
-        ranges.append((start, last, kind))
+        first, last, kind = line.split()
+        first, last, kind = int(first, 16), int(last, 16), int(kind)
+        if not previous < first <= last <= 0x10FFFF or kind not in (1, 2, 3):
+            fail(f"invalid Unicode range: {line}")
+        ranges.append((first, last, kind))
+        previous = last
     if len(ranges) != EXPECTED_RANGES:
         fail(f"unexpected Unicode range count {len(ranges)}")
     return ranges

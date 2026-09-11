@@ -20,6 +20,8 @@ static EFI_LOADED_IMAGE_PROTOCOL loaded_image;
 
 _Noreturn void bm_main(void) { abort(); }
 void bm_heap_init(uintptr_t start, uintptr_t end) { (void)start; (void)end; }
+void bm_parallel_end(void) {}
+void bm_mp_init(EFI_BOOT_SERVICES *boot) { (void)boot; }
 
 static EFI_STATUS EFIAPI output(SIMPLE_TEXT_OUTPUT_INTERFACE *self, CHAR16 *text) {
     (void)self;

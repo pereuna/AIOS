@@ -6,6 +6,16 @@ static void elapsed(uint64_t ticks) {
     bm_uint(ticks/100); bm_putc('.');
     bm_putc((char)('0'+ticks/10%10)); bm_putc((char)('0'+ticks%10));
 }
+static void rate(unsigned tokens, uint64_t ticks) {
+    if (!ticks) { bm_puts("n/a"); return; }
+    uint64_t hundredths=(uint64_t)tokens*10000/ticks;
+    elapsed(hundredths);
+}
+static void workers_status(void) {
+    bm_puts("Compute: "); bm_puts(bm_parallel_mode()); bm_puts("; workers ");
+    bm_uint(bm_parallel_count()); bm_puts("; requested "); bm_uint(bm_parallel_limit());
+    bm_putc('\n');
+}
 static int integer(const char *s, unsigned min, unsigned max) {
     if (!*s) return -1;
     unsigned n=0;
@@ -20,6 +30,7 @@ static void help(void) {
     bm_puts("Type a question in English and press Enter.\n"
             "/reset   clear conversation     /tokens N   answer length\n"
             "/stats   memory and context     /selftest   numerical probe\n"
+            "/threads N   1..4 workers (1 = serial comparison)\n"
             "/help    show help              /quit       power off\n");
 }
 static void math_check(void) {
@@ -39,7 +50,10 @@ static void selftest(Model *m) {
     const int probes[]={0,1,2,17,198,216,999,1000,4096,9690,16384,19556,24576,32768,40000,49151};
     size_t before=bm_heap_available();
     State *s=new_state(m,8);
+    bm_parallel_begin();
+    workers_status();
     bm_puts("SELFTEST BEGIN\n");
+    uint64_t began=bm_ticks;
     for (unsigned pos=0;pos<4;pos++) {
         forward(m,s,tokens[pos],1);
         bm_puts("LOGITS "); bm_uint(pos); bm_putc(' '); bm_uint(greedy(s->logits));
@@ -49,11 +63,15 @@ static void selftest(Model *m) {
         }
         bm_putc('\n');
     }
+    bm_parallel_end();
+    bm_puts("SELFTEST time "); elapsed(bm_ticks-began); bm_puts("s\n");
     free_state(s);
     if (bm_heap_available()!=before) bm_panic("selftest leaked heap memory");
     bm_puts("SELFTEST END heap restored\n");
 }
 static void respond(Model *m, State *s, int *ids, int n, int limit) {
+    bm_parallel_begin();
+    workers_status();
     uint64_t start=bm_ticks;
     for (int i=0;i<n;i++) forward(m,s,ids[i],i==n-1);
     uint64_t ready=bm_ticks;
@@ -69,9 +87,12 @@ static void respond(Model *m, State *s, int *ids, int n, int limit) {
     }
     uint64_t end=bm_ticks;
     forward(m,s,2,0); forward(m,s,(int)m->byte_id['\n'],0);
+    bm_parallel_end();
     bm_puts("\n[prompt "); bm_uint((unsigned)n); bm_puts(" tokens, "); elapsed(ready-start);
     bm_puts("s; output "); bm_uint((unsigned)count); bm_puts(" tokens, "); elapsed(end-ready);
-    bm_puts(ended ? "s]\n" : "s; limit reached]\n");
+    bm_puts("s; "); rate((unsigned)count,end-ready); bm_puts(" tok/s; ");
+    bm_puts(bm_parallel_mode()); bm_putc(' '); bm_uint(bm_parallel_count()); bm_puts(" workers");
+    bm_puts(ended ? "]\n" : "; limit reached]\n");
 }
 _Noreturn void bm_main(void) {
     bm_init();
@@ -90,6 +111,8 @@ _Noreturn void bm_main(void) {
     int *ids=alloc(MAXCTX*sizeof(int));
     char line[4096];
     int limit=BOOT_TOKENS;
+    bm_parallel_begin(); bm_parallel_end(); /* Discover the usable dispatch mode. */
+    workers_status();
     bm_puts("SmolLM2-1.7B-Instruct Q4; context "); bm_uint(BOOT_CONTEXT); bm_puts(" tokens.\n");
     help();
     for (;;) {
@@ -105,7 +128,16 @@ _Noreturn void bm_main(void) {
         if (!strcmp(line,"/stats")) {
             bm_puts("Context "); bm_uint((unsigned)s->pos); bm_putc('/'); bm_uint(BOOT_CONTEXT);
             bm_puts("; free heap "); bm_uint(bm_heap_available()); bm_puts(" bytes; uptime ");
-            elapsed(bm_ticks); bm_puts("s\n"); continue;
+            elapsed(bm_ticks); bm_puts("s\n"); workers_status(); continue;
+        }
+        if (!memcmp(line,"/threads ",9)) {
+            int value=integer(line+9,1,BM_MAX_THREADS);
+            if (value<0) bm_puts("Use /threads 1..4\n");
+            else {
+                bm_parallel_set_limit((unsigned)value);
+                bm_parallel_begin(); bm_parallel_end(); workers_status();
+            }
+            continue;
         }
         if (!memcmp(line,"/tokens ",8)) {
             int value=integer(line+8,1,MAXCTX);

@@ -89,8 +89,15 @@ def verify():
         x = x + hidden @ unpack(packed[6]).T
         assert np.isfinite(x).all(), index
     expected = norm(x, final_norm) @ unpack(embed).T
-    result = subprocess.run([str(ROOT / ".build/test-inference"), str(ROOT / "model.bin")],
-                            check=True, capture_output=True)
+    command = [str(ROOT / ".build/test-inference"), str(ROOT / "model.bin")]
+    result = subprocess.run(command, check=True, capture_output=True,
+                            env={**os.environ, "SMOL_THREADS": "1", "SMOL_MP_MODE": "pool"})
+    for threads, mode in ((2, "pool"), (4, "pool"), (4, "blocking")):
+        parallel = subprocess.run(command, check=True, capture_output=True,
+                                  env={**os.environ, "SMOL_THREADS": str(threads),
+                                       "SMOL_MP_MODE": mode})
+        assert parallel.stdout == result.stdout, (threads, mode, "parallel logits changed")
+    print("MP / serial: 2- and 4-worker pool and blocking AP dispatch are bit-identical")
     actual = np.frombuffer(result.stdout, "<f4").reshape(len(TOKENS), VOCAB)
     assert np.isfinite(actual).all()
     np.testing.assert_allclose(actual, expected, atol=0.002, rtol=0.0002)
