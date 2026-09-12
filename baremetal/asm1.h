@@ -18,7 +18,8 @@ enum {
     ASM1_LABEL = -204,
     ASM1_DUPLICATE = -205,
     ASM1_NO_EXIT = -206,
-    ASM1_TOO_LARGE = -207
+    ASM1_TOO_LARGE = -207,
+    ASM1_INCOMPLETE = -208
 };
 
 typedef struct {
@@ -28,6 +29,7 @@ typedef struct {
     size_t input_count;
     int error;
     unsigned error_line;
+    int complete; /* A standalone end directive was parsed. */
 } asm1_program;
 
 int asm1_compile(const char *source, asm1_program *out);

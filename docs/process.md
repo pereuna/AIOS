@@ -106,6 +106,14 @@ vapautuksen myös jokaisessa injektoidussa varausvirheessä. Jokaisen tavallisen
 koeajon jälkeen firmware-ajastimen pitää edetä ja konsolin toimia. MP-laskenta
 testataan ennen ja jälkeen kokeiden.
 
+ASM-kääntäjää testataan lisäksi riippumattomia odotusarvoja vasten:
+kaikki käskyt, kaikki virtuaalirekisterit, sama rekisteri molempina operandeina,
+lähderekisterin säilyminen, uint32-ylivuodot, unsigned-vertailu, muistisolut,
+hypyt, suurin yhteinen tekijä sekä nollalla jako ja askelraja.
+Automaatiotesti syöttää ennalta määrätyt mallivastaukset ja tarkistaa koko
+kierroksen käännösvirheestä ajovirheen kautta onnistuneeseen tulokseen sekä
+lopulliseen vastaukseen. Varsinaiset työkalukutsut ajetaan ring3:ssa.
+
 ```
 make test-process
 python3 tests/process_qemu.py --accel kvm --cpus 4

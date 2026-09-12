@@ -3,6 +3,7 @@
 #include "../.build/config.h"
 #include "process_console.h"
 #include "asm1.h"
+#include "agent_model.h"
 
 static void elapsed(uint64_t ticks) {
     bm_uint(ticks/100); bm_putc('.');
@@ -38,6 +39,7 @@ static void help(void) {
             "/threads N   1..4 workers (1 = serial comparison)\n"
             "/simd auto|sse2   select matvec instructions\n"
             "/run     ring3 test             /run help   process commands\n"
+            "/asm SOURCE   asm1; AI calls run automatically (max 3 per question)\n"
             "/help    show help              /quit       power off\n");
 }
 static void math_check(void) {
@@ -78,6 +80,10 @@ static void selftest(Model *m) {
     if (bm_heap_available()!=before) bm_panic("selftest leaked heap memory");
     bm_puts("SELFTEST END heap restored\n");
 }
+static void agent_display(void *context, const char *text, int tool) {
+    (void)context;
+    bm_puts(tool ? "asm1: " : "AI> "); bm_puts(text); bm_putc('\n');
+}
 static void respond(Model *m, State *s, int *ids, int n, int limit) {
     bm_simd_reset();
     bm_parallel_begin();
@@ -85,36 +91,18 @@ static void respond(Model *m, State *s, int *ids, int n, int limit) {
     uint64_t start=bm_ticks;
     for (int i=0;i<n;i++) forward(m,s,ids[i],i==n-1);
     uint64_t ready=bm_ticks;
-    int count=0,ended=0;
-    bm_puts("AI> ");
-    char generated[ASM1_MAX_SOURCE]; size_t generated_n=0, pending_n=0; char pending[ASM1_MAX_SOURCE]; int tool_candidate=1;
-    while (count<limit && s->pos<s->ctx-2) {
-        int token=greedy(s->logits);
-        if (token==2 || token==0) { ended=1; break; }
-        Word w=m->words[token];
-        if ((uint32_t)token>=m->nspecial) {
-            size_t take=w.n; if (generated_n+take>=sizeof(generated)) take=sizeof(generated)-generated_n-1;
-            memcpy(generated+generated_n,w.p,take); generated_n+=take; generated[generated_n]=0;
-            if (tool_candidate && pending_n+take<sizeof(pending)) {
-                memcpy(pending+pending_n,w.p,take); pending_n+=take; pending[pending_n]=0;
-                if (pending_n>=5 && memcmp(pending,"/asm ",5)) { tool_candidate=0; bm_write(pending,pending_n); pending_n=0; }
-            } else if (!tool_candidate) bm_write(w.p,w.n);
-        }
-        count++;
-        forward(m,s,token,1);
-    }
-    uint64_t end=bm_ticks;
-    forward(m,s,2,0); forward(m,s,(int)m->byte_id['\n'],0);
     bm_parallel_end();
-    if (tool_candidate && pending_n>=5 && !memcmp(pending,"/asm ",5)) {
-        bm_puts("\nAI tool call: asm1\n"); bm_process_command(pending);
-    } else if (pending_n) bm_write(pending,pending_n);
+    agent_model model={m,s,ids};
+    agent_io io={&model,agent_model_generate,agent_model_feedback,agent_display};
+    agent_result result=agent_run(&io,(unsigned)limit);
+    uint64_t end=bm_ticks;
     bm_puts("\n[prompt "); bm_uint((unsigned)n); bm_puts(" tokens, "); elapsed(ready-start);
-    bm_puts("s; output "); bm_uint((unsigned)count); bm_puts(" tokens, "); elapsed(end-ready);
-    bm_puts("s; "); rate((unsigned)count,end-ready); bm_puts(" tok/s; ");
+    bm_puts("s; output "); bm_uint(result.tokens); bm_puts(" tokens, "); elapsed(end-ready);
+    bm_puts("s; "); rate(result.tokens,end-ready); bm_puts(" tok/s (including tools/feedback); ");
     bm_puts(bm_parallel_mode()); bm_putc(' '); bm_uint(bm_parallel_count()); bm_puts(" workers");
     bm_puts("; "); bm_puts(bm_simd_used());
-    bm_puts(ended ? "]\n" : "; limit reached]\n");
+    bm_puts("; calls="); bm_uint(result.calls); bm_puts("; ");
+    bm_puts(agent_stop(result.stop)); bm_puts("]\n");
 }
 _Noreturn void bm_main(void) {
     bm_init();
@@ -176,10 +164,10 @@ _Noreturn void bm_main(void) {
         }
         if (line[0]=='/') { bm_puts("Unknown command. Use /help or /run help.\n"); continue; }
         int n=turn_tokens(m,line,s->pos==0,ids,MAXCTX);
-        if (n+3>s->ctx) { bm_puts("Question exceeds context. Shorten it.\n"); continue; }
-        if (s->pos+n+3>s->ctx) {
+        if (n+AGENT_CONTEXT_RESERVE+64>s->ctx) { bm_puts("Question and tool instructions exceed context. Shorten it or build with CONTEXT=2048 or larger.\n"); continue; }
+        if (s->pos+n+AGENT_CONTEXT_RESERVE+64>s->ctx) {
             n=turn_tokens(m,line,1,ids,MAXCTX);
-            if (n+3>s->ctx) { bm_puts("Question exceeds context. Shorten it.\n"); continue; }
+            if (n+AGENT_CONTEXT_RESERVE+64>s->ctx) { bm_puts("Question and tool instructions exceed context. Shorten it or increase CONTEXT.\n"); continue; }
             s->pos=0; bm_puts("[context full; starting a new conversation]\n");
         }
         respond(m,s,ids,n,limit);

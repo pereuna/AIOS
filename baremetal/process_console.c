@@ -1,7 +1,7 @@
 #include "runtime.h"
 #include "process.h"
 #include "process_console.h"
-#include "asm1.h"
+#include "asm1_tool.h"
 
 static const struct {
     const char *name, *description;
@@ -94,17 +94,10 @@ static int run(const char *description, const unsigned char *program, size_t byt
     return status;
 }
 static void run_asm(const char *source) {
-    asm1_program p; int e=asm1_compile(source,&p);
-    if (e) { bm_puts("asm1: compile_error "); bm_puts(asm1_error(e)); if (p.error_line) { bm_puts(" line "); bm_uint(p.error_line); } bm_putc('\n'); return; }
-    bm_process_result r; bm_puts("asm1: running\n");
-    int status=bm_process_run_input(p.code,p.code_size,p.input,p.input_count,&r);
-    bm_puts("asm1: ");
-    if (status==BM_PROCESS_OK) bm_puts("ok");
-    else if (status==BM_PROCESS_TIMEOUT) bm_puts("runtime_error E_STEP_LIMIT");
-    else if (status>=BM_PROCESS_FAULT_BASE) { bm_puts("runtime_error "); bm_puts(fault_name(r.fault_vector)); }
-    else if (status==BM_PROCESS_UNSAFE) bm_puts("runtime_error E_ENCODING_REJECTED");
-    else bm_puts("runtime_error E_PROCESS");
-    bm_puts("; value="); bm_uint(r.rax); bm_puts("; steps="); bm_uint(r.steps); bm_putc('\n');
+    asm1_result r; char text[ASM1_FEEDBACK_SIZE];
+    asm1_execute(source,0,&r);
+    asm1_feedback(&r,text);
+    bm_puts("asm1: "); bm_puts(text); bm_putc('\n');
 }
 /* A command must end or have a separator: /runner is not /run. */
 static const char *argument(const char *line, const char *command) {

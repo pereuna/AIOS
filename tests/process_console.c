@@ -58,6 +58,28 @@ int main(void) {
     assert(ap.input_count==2 && ap.input[0]==48 && ap.input[1]==18 && ap.code_size>0);
     assert(asm1_compile("li r0 1",&ap)==ASM1_NO_EXIT);
     assert(asm1_compile("li r0 1\nexit r0\njmp l9",&ap)==ASM1_LABEL);
+    assert(asm1_compile("asm1\nwrong\nexit r0",&ap)==ASM1_SYNTAX && ap.error_line==2);
+    assert(asm1_compile("exit r0; end; li r0 2",&ap)==ASM1_SYNTAX);
+    assert(asm1_compile("exit r0; end junk",&ap)==ASM1_SYNTAX);
+    assert(asm1_compile("input 1234567890123456789012345; exit r0",&ap)==ASM1_NUMBER);
+    assert(asm1_compile("li r10 1; exit r0",&ap)==ASM1_SYNTAX);
+    assert(asm1_compile("ld r0 256; exit r0",&ap)==ASM1_SYNTAX);
+    assert(asm1_compile("label l0; label l0; exit r0",&ap)==ASM1_DUPLICATE);
+    assert(asm1_compile(NULL,&ap)==ASM1_SOURCE && ap.error==ASM1_SOURCE);
+    char large[ASM1_MAX_SOURCE+1]; memset(large,' ',sizeof(large)-1); large[sizeof(large)-1]=0;
+    assert(asm1_compile(large,&ap)==ASM1_TOO_LARGE);
+    size_t used=0;
+    for (unsigned i=0;i<70;i++) { strcpy(large+used,"li r0 157;"); used+=strlen(large+used); }
+    strcpy(large+used,"exit r0;");
+    assert(asm1_compile(large,&ap)==ASM1_TOO_LARGE); /* Expanded constants exceed code page. */
+    used=0;
+    for (unsigned i=0;i<129;i++) { strcpy(large+used,"mov r0 r1;"); used+=strlen(large+used); }
+    strcpy(large+used,"exit r0;"); assert(asm1_compile(large,&ap)==ASM1_TOO_LARGE);
+    strcpy(large,"input "); used=strlen(large);
+    for (unsigned i=0;i<64;i++) { strcpy(large+used,"4294967295 "); used+=11; }
+    strcpy(large+used,"; exit r0; end");
+    assert(asm1_compile(large,&ap)==ASM1_OK && ap.input_count==64 && ap.complete);
+    strcpy(large+used,"1; exit r0; end"); assert(asm1_compile(large,&ap)==ASM1_NUMBER);
     unsigned char bytes[16]={0};
     assert(bm_process_parse_hex(" b8 2A000000 ",bytes,sizeof(bytes))==7);
     const unsigned char expected[]={0xb8,42,0,0,0,0xcd,0x80};

@@ -1,5 +1,52 @@
 # UEFI-version tarkistus
 
+## ASM-kääntäjä ja automaattinen työkalukierros (12.9.2026)
+
+Kääntäjän virtuaalirekisterit erotettiin pinosta ja apurekistereistä. Korjaukset
+kattavat `exit rN` -paluun, jako- ja jakojäännöskäskyt, bittisiirrot,
+vertailuliput sekä lähderekisterien säilymisen. Parseri tarkistaa lähteen ja
+konekoodin kokorajat, pitkät sanat, virherivit sekä `end`-direktiivin.
+
+`make test-process` läpäisi QEMU/OVMF:n TCG-ajoissa yhdellä ja neljällä
+virtuaaliytimellä. ASM-kokeissa verrataan käskyjen tuloksia riippumattomiin
+odotusarvoihin kaikilla virtuaalirekistereillä, myös samalla kohde- ja
+lähderekisterillä. Mukana ovat ylivuodot, unsigned-vertailut, muistisolut,
+hypyt, suurin yhteinen tekijä, nollalla jako ja käskybudjetin loppuminen.
+Automaation integraatiotesti käy ennalta määrätyillä mallivastauksilla läpi
+käännösvirheen, ring3:ssa syntyvän ajovirheen, korjatun laskun ja lopullisen
+vastauksen. Firmware-tila, muistivarausten vapautus ja MP-poolin toiminta
+tarkistetaan myös työkalupalautteiden välissä.
+
+`make test` läpäisi. Uudet host-testit kattavat korjausyritykset, kolmen kutsun
+rajan, yhteisen tokenibudjetin, osiin jakautuvan `/asm `-alkumerkinnän,
+lopputokenin, katkenneet ja liian pitkät vastaukset, ohjaustokenit sekä
+palautteen viestikehystyksen ja kontekstitilan riittävyyden. Parseri- ja
+automaatiotestit läpäisivät myös AddressSanitizerin ja UndefinedBehaviorSanitizerin.
+C/NumPy-vertailun suurin logittiero säilyi arvossa 0,00023842; testatut
+SSE2/AVX2- ja MP-vaihtoehdot olivat bittitasolla samoja.
+
+Myös hidas mallin integraatiotesti läpäisi QEMU/OVMF:ssä KVM:llä, neljällä
+virtuaaliytimellä ja 4 GiB RAMilla. Käytössä oli oikea Q4-malli, sama
+generointi-/palautekoodi kuin sovelluksessa ja oikea ring3-prosessi.
+Kysymykseen `What is 17+25?` malli tuotti:
+
+```text
+/asm asm1; li r0 17; li r1 25; add r0 r1; exit r0; end
+```
+
+Prosessi palautti `ok; value=42; steps=5`. AIOS lisäsi tuloksen mallin
+kontekstiin, minkä jälkeen malli vastasi `17+25 = 42.` ja päätti vuoronsa.
+Käyttäjän välisyötettä ei tarvittu. Testin voi toistaa komennolla
+`make test-agent-live`. Tämä vahvistaa yhden kokonaisen käyttötapauksen;
+laaja algoritmien osaamistesti ja oikean mallin korjausyritysten onnistumisaste
+ovat vielä mittaamatta. Korjausohjauksen virhepolut testattiin erikseen
+ennalta määrätyillä mallivastauksilla.
+
+Oletusasetukset ovat nyt `CONTEXT=2048 TOKENS=512`. Mallipainojen SHA-256
+säilyi ennallaan. Uusi ohjeistus ja esimerkkikeskustelu tulevat EFI-ohjelmasta;
+painoja ei hienosäädetty. Tämän version fyysisen koneen rautatesti on vielä
+tekemättä.
+
 ## Ring3-palautuksen korjaus (12.9.2026)
 
 Käyttäjän raportoima `/run`-jumitus toistettiin vanhalla prosessikoodilla

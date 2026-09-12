@@ -1,6 +1,7 @@
 /* SmolLM2-1.7B-Instruct inference for the x86-64 UEFI application.
  * Q4 weights are loaded from USB once and read directly from RAM. */
 #include "baremetal/runtime.h"
+#include "baremetal/asm1_prompt.h"
 #include <immintrin.h>
 
 enum { D=2048, H=8192, L=24, NH=32, NK=32, V=49152, HS=64, KD=2048,
@@ -392,7 +393,7 @@ static int greedy(const float *logits) {
     return best;
 }
 static int turn_tokens(Model *m, const char *prompt, int first, int *ids, int cap) {
-    const char *system="<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face. For exact integer algorithms, emit a tool call starting with /asm followed by one-line asm1 source using semicolons; end the source with exit and end.\n<|im_end|>\n";
+    const char *system="<|im_start|>system\n" ASM1_SYSTEM_PROMPT "<|im_end|>\n" ASM1_EXAMPLES;
     size_t size=strlen(prompt)+strlen(system)+128;
     char *text=alloc(size);
     const char *parts[]={first ? system : "","<|im_start|>user\n",prompt,"<|im_end|>\n<|im_start|>assistant\n"};

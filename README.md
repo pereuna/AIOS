@@ -50,8 +50,11 @@ Python ja NumPy ovat vain kehityskoneen työkaluja, eivät USB-version riippuvuu
 Kontekstin ja vastauksen oletuspituuden voi asettaa käännösvaiheessa:
 
 ```sh
-make CONTEXT=2048 TOKENS=128
+make CONTEXT=2048 TOKENS=512
 ```
+
+Nämä ovat myös oletukset. `TOKENS` on yhden käyttäjäkysymyksen kaikkien
+mallivastausten yhteinen budjetti, mukaan lukien ASM-kutsut ja korjausyritykset.
 
 `make clean` poistaa vain `.build`- ja `dist`-hakemistot.
 `make test` tarkistaa muunnoksen, pinnatun Unicode-taulukon, EFI-kuvan otsakkeen,
@@ -81,9 +84,10 @@ model.bin
 
 Käynnistä x86-64-kone UEFI-tilassa. Secure Boot pitää poistaa käytöstä, koska
 tiedostoa ei ole allekirjoitettu. Suositus on vähintään 4 GiB RAMia.
-Oletuskonteksti on 1 024 tokenia: mallipainot ja FP32-KV-välimuisti vievät
-yhteensä noin 1,27 GiB, minkä lisäksi tarvitaan ohjelman ja firmwaren muistia.
-2 048 tokenilla vastaava määrä on noin 1,65 GiB. Täysi 8 192 tokenin konteksti
+Oletuskonteksti on 2 048 tokenia: mallipainot ja FP32-KV-välimuisti vievät
+yhteensä noin 1,65 GiB, minkä lisäksi tarvitaan ohjelman ja firmwaren muistia.
+1 024 tokenilla vastaava määrä on noin 1,27 GiB, mutta työkalukierroksille jää
+vähemmän tilaa. Täysi 8 192 tokenin konteksti
 ei käytännössä mahdu 4 GiB:n koneeseen. Matriisi-vektorilaskenta käyttää
 automaattisesti AVX2:ta, kun suorittavan ytimen CPUID ja XCR0 sallivat sen;
 muuten käytetään SSE2:ta. UEFI MP Services -rajapinnalla laskenta käyttää
@@ -111,7 +115,7 @@ Komennot käyttöliittymässä:
 | Komento | Toiminto |
 | --- | --- |
 | `/reset` | Tyhjennä keskustelukonteksti |
-| `/tokens N` | Aseta vastauksen enimmäispituus |
+| `/tokens N` | Aseta kysymyksen yhteinen generointibudjetti (oletus 512) |
 | `/stats` | Näytä konteksti, vapaa muistimäärä ja käyntiaika |
 | `/threads N` | Valitse 1–4 workeria; 1 käyttää sarjalaskentaa |
 | `/simd auto` | Käytä AVX2:ta sitä tukevilla workereilla (oletus), muuten SSE2:ta |
@@ -121,6 +125,7 @@ Komennot käyttöliittymässä:
 | `/run add 12 30` | Laske kahden luvun summa ring3:ssa |
 | `/run tests` | Tarkista paluu, poikkeukset ja silmukan pysäyttäminen |
 | `/run help` | Näytä prosessikokeiden ohje |
+| `/asm SOURCE` | Käännä ja suorita asm1-ohjelma käsin |
 | `/help` | Näytä ohje |
 | `/quit` | Sammuta kone UEFI:n kautta |
 
@@ -135,6 +140,14 @@ perään. Mallille tarkoitettu minimaalinen `asm1`-kääntäjä on käytettävis
 komennolla `/asm SOURCE` (rivinvaihdot voi korvata puolipisteillä). Se kääntää
 rajatun kokonaislukukielen suoraan ring3-prosessiksi; kieli ja rajat ovat
 [docs/asm1.md](docs/asm1.md).
+
+Mallille annetaan ASM-kielen järjestelmäohje ja esimerkkikeskustelu
+työkalukutsuista sekä virheen korjaamisesta. Kun mallin valmis vastaus on `/asm ...; end`, AIOS
+kääntää ja suorittaa ohjelman automaattisesti, palauttaa tuloksen mallin
+kontekstiin ja jatkaa vastausta ilman käyttäjän toimia. Malli voi myös korjata
+virheellisen ohjelman. Yhtä kysymystä kohti sallitaan enintään kolme kutsua;
+katkennutta kutsua ei suoriteta. `asm1:` näyttää välituloksen, `AI>` mallin
+vastauksen. Tämä ohjeistaa nykyistä mallia, eikä muuta mallipainoja.
 
 Prosessi saa 4 KiB muuttumattoman koodisivun ja 8 KiB NX-pinon suojaussivuineen.
 Kernelin muisti ei ole käyttäjätilan käytettävissä. Trap Flag rajoittaa ajon

@@ -38,11 +38,13 @@ int main(int argc, char **argv) {
     if (data==MAP_FAILED) bm_panic("cannot map model");
     Model *m=alloc(sizeof(*m)); init_model(m,data,(size_t)st.st_size);
     if (argc==3) {
-        State *s=new_state(m,256);
-        int ids[256], n=turn_tokens(m,argv[2],1,ids,256);
+        State *s=new_state(m,2048);
+        int ids[MAXCTX], n=turn_tokens(m,argv[2],1,ids,MAXCTX);
+        if (n+256>s->ctx) bm_panic("smoke prompt exceeds context");
+        fprintf(stderr,"Prompt: %d tokens\n",n);
         bm_parallel_begin();
         for (int i=0;i<n;i++) forward(m,s,ids[i],i==n-1);
-        for (int i=0;i<24;i++) {
+        for (int i=0;i<256;i++) {
             int token=greedy(s->logits);
             if (token==0 || token==2) break;
             if ((unsigned)token>=m->nspecial) fwrite(m->words[token].p,1,m->words[token].n,stdout);
