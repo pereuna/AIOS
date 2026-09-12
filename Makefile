@@ -31,7 +31,7 @@ EFI_CFLAGS = -O3 -std=c11 -Wall -Wextra -Wpedantic -ffreestanding -fno-builtin \
 	-fno-unwind-tables -m64 -mno-red-zone -mno-avx -msse2 -mfpmath=sse \
 	-mno-80387 -mno-mmx -ffp-contract=off -maccumulate-outgoing-args -DGNU_EFI_USE_MS_ABI \
 	-I$(EFI_ROOT)/include/efi -I$(EFI_ROOT)/include/efi/x86_64
-OBJECTS = .build/main.o .build/platform.o .build/mp.o .build/cpu.o .build/lib.o .build/math.o .build/fp.o
+OBJECTS = .build/main.o .build/platform.o .build/process.o .build/process-arch.o .build/process_console.o .build/asm1.o .build/mp.o .build/cpu.o .build/lib.o .build/math.o .build/fp.o
 BOOT = dist/EFI/BOOT/BOOTX64.EFI
 
 .PHONY: all clean model model-check test bench FORCE
@@ -98,7 +98,15 @@ $(GNU_EFI_STAMP):
 .build/%.o: baremetal/%.c baremetal/runtime.h Makefile $(EFI_BOOTSTRAP) | .build
 	$(CC) $(EFI_CFLAGS) -c $< -o $@
 
-.build/main.o: neural.c .build/config.h
+.build/process.o: baremetal/process.c baremetal/process.h baremetal/runtime.h Makefile $(EFI_BOOTSTRAP) | .build
+	$(CC) $(EFI_CFLAGS) -c $< -o $@
+
+.build/process-arch.o: baremetal/process.S baremetal/process.h Makefile $(EFI_BOOTSTRAP) | .build
+	$(CC) -m64 -c $< -o $@
+
+.build/main.o: neural.c .build/config.h baremetal/process_console.h
+.build/process_console.o: baremetal/process.h baremetal/process_console.h baremetal/asm1.h
+.build/asm1.o: baremetal/asm1.c baremetal/asm1.h baremetal/process.h baremetal/runtime.h
 .build/mp.o .build/platform.o: baremetal/mp.h
 .build/cpu.o: baremetal/cpu.h
 
@@ -142,15 +150,36 @@ MP_TEST_DEPS = $(MP_TEST_SOURCES) tests/mp_firmware.h baremetal/mp.h baremetal/c
 .build/test-file-loader: tests/file_loader.c baremetal/platform.c baremetal/mp.h baremetal/runtime.h Makefile $(EFI_BOOTSTRAP) | .build
 	$(CC) $(EFI_CFLAGS) tests/file_loader.c -o $@
 
-test: all .build/test-inference .build/test-file-loader .build/test-parallel .build/test-simd
+.build/test-process-console: tests/process_console.c baremetal/process_console.c baremetal/asm1.c baremetal/process_console.h baremetal/process.h baremetal/asm1.h | .build
+	$(CC) -O2 -std=c11 -Wall -Wextra -Wpedantic tests/process_console.c baremetal/process_console.c baremetal/asm1.c -o $@
+
+test: all .build/test-inference .build/test-file-loader .build/test-parallel .build/test-simd .build/test-process-console
 	$(PYTHON) -m unittest discover -s tests -p 'test_*.py'
 	.build/test-file-loader
 	.build/test-parallel
 	.build/test-simd
+	.build/test-process-console
 	$(PYTHON) tests/verify.py
 
 bench: model.bin .build/test-inference
 	$(PYTHON) tests/bench.py
+
+.build/process-test-main.o: tests/process_uefi.c baremetal/process.h baremetal/process_console.h baremetal/asm1.h baremetal/runtime.h $(EFI_BOOTSTRAP) | .build
+	$(CC) $(EFI_CFLAGS) -c $< -o $@
+
+.build/process-test.so: .build/process-test-main.o $(filter-out .build/main.o,$(OBJECTS)) $(EFI_BOOTSTRAP)
+	ld -nostdlib -znocombreloc -shared -Bsymbolic --no-undefined \
+		-T $(EFI_ROOT)/lib/elf_x86_64_efi.lds $(EFI_ROOT)/lib/crt0-efi-x86_64.o \
+		$(filter %.o,$^) --wrap=bm_pages_alloc --wrap=bm_pages_free -L$(EFI_ROOT)/lib -lgnuefi -o $@
+
+.build/process-test.efi: .build/process-test.so
+	$(OBJCOPY) -j .text -j .data -j .rodata -j .dynamic -j .dynsym -j .rel \
+		-j .rela -j .reloc -O pei-x86-64 --subsystem=10 $< $@
+
+.PHONY: test-process
+test-process: .build/process-test.efi
+	$(PYTHON) tests/process_qemu.py
+	$(PYTHON) tests/process_qemu.py --cpus 4
 
 clean:
 	rm -rf .build dist

@@ -392,7 +392,7 @@ static int greedy(const float *logits) {
     return best;
 }
 static int turn_tokens(Model *m, const char *prompt, int first, int *ids, int cap) {
-    const char *system="<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|im_end|>\n";
+    const char *system="<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face. For exact integer algorithms, emit a tool call starting with /asm followed by one-line asm1 source using semicolons; end the source with exit and end.\n<|im_end|>\n";
     size_t size=strlen(prompt)+strlen(system)+128;
     char *text=alloc(size);
     const char *parts[]={first ? system : "","<|im_start|>user\n",prompt,"<|im_end|>\n<|im_start|>assistant\n"};

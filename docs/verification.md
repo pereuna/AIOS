@@ -1,5 +1,32 @@
 # UEFI-version tarkistus
 
+## Ring3-palautuksen korjaus (12.9.2026)
+
+Käyttäjän raportoima `/run`-jumitus toistettiin vanhalla prosessikoodilla
+QEMU/OVMF:ssä: testi tulosti aloituksen, mutta ei palannut onnistuneesti.
+Korjatussa koodissa IRETQ-pino, IF-lipun palautus, TSS:n rakenne ja
+busy/null-TR:n käsittely sekä NX/CPU-tilan valmistelu on korjattu.
+Käyttöliittymään lisättiin nimetyt `/run`-kokeet ja desimaalinen tulos.
+
+`make test-process` läpäisi oikeat ring3-kokeet QEMU TCG:llä yhdellä ja
+neljällä virtuaaliytimellä. KVM-ajot läpäisivät myös yhdellä ja neljällä ytimellä;
+lopullinen neljän ytimen ajo sisälsi varausvirheiden injektoinnin. Käytössä
+oli QEMU 11.1.1 ja OVMF 2026.05. Kokeet kattavat paluun, poikkeukset,
+suojaukset, käskybudjetin, toistot, CPU/FP-tilan palautuksen, firmware-ajastimen,
+MP-rivitehtävät ja komentorajapinnan. Testin yksityiskohdat ja rajoitukset ovat
+tiedostossa [process.md](process.md).
+
+Host-komentotulkin testit läpäisivät myös AddressSanitizerin ja
+UndefinedBehaviorSanitizerin. `make test` läpäisi: EFI/Unicode-testit,
+tiedostonlataaja, MP, SIMD, uusi komentotulkki ja C/NumPy-vertailu.
+196 608 logitin suurin C/NumPy-ero oli 0,00023842; tokenit `[805, 198, 2, 17]`.
+SSE2/AVX2 ja worker-/dispatch-tilat säilyivät bittitasolla samoina.
+
+Korjatun EFI-kuvan koko on 82 080 tavua ja SHA-256
+`1b0cfe72b2a514861e71b437437f8bd5237bb36c19c12f1ccb4e84dde12208d9`.
+Fyysisen koneen rautatesti tälle kuvalle on vielä tekemättä. USB-tikkua
+ei ollut liitettynä korjauksen valmistuessa, joten kuvaa ei siirretty tikulle.
+
 ## AVX2-version kehityskonetestit (11.9.2026)
 
 `make test` läpäisi. Kaikki 196 608 logittia täsmäsivät bittitasolla SSE2:n

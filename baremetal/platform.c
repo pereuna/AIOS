@@ -108,6 +108,16 @@ void bm_reserve_heap(size_t bytes) {
         bm_panic("not enough RAM for context; use more RAM or a smaller CONTEXT");
     bm_heap_init((uintptr_t)address,(uintptr_t)address+pages*4096);
 }
+int bm_pages_alloc(size_t pages, uintptr_t *address) {
+    if (!pages || !address || pages>SIZE_MAX/4096) return -1;
+    EFI_PHYSICAL_ADDRESS value=0;
+    if (EFI_ERROR(services->AllocatePages(AllocateAnyPages,EfiLoaderData,pages,&value))) return -1;
+    *address=(uintptr_t)value;
+    return 0;
+}
+void bm_pages_free(uintptr_t address, size_t pages) {
+    if (address && pages && services->FreePages) services->FreePages((EFI_PHYSICAL_ADDRESS)address,pages);
+}
 /* Only the boot volume is used. Keep the packed weights in one RAM allocation;
  * all file handles are closed before inference starts. */
 const void *bm_load_model(size_t bytes) {

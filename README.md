@@ -60,6 +60,18 @@ NumPy-vertailua vasten kehityskoneella.
 
 ## USB-tikku
 
+Valmiin `dist`-hakemiston voi asentaa irrotettavalle FAT32-tikulle apuohjelmalla:
+
+```sh
+tools/make_usb.sh /dev/sda
+```
+
+Komento käyttää olemassa olevaa `/dev/sda1`-osiota. Jos tikku pitää alustaa,
+käytä erikseen tuhoavaa komentoa `sudo tools/make_usb.sh --format --yes /dev/sda`.
+Työkalu vaatii irrotettavan levyn (`lsblk RM=1`), irrottaa sen lopuksi ja vertaa
+ennen jokaista kopiointia kokoa sekä SHA-256-tiivistettä. Samanlainen `model.bin`
+ohitetaan kokonaan.
+
 Kopioi sekä `dist/EFI` että `dist/model.bin` FAT32-tikun juureen. Lopputulos:
 
 ```text
@@ -105,8 +117,37 @@ Komennot käyttöliittymässä:
 | `/simd auto` | Käytä AVX2:ta sitä tukevilla workereilla (oletus), muuten SSE2:ta |
 | `/simd sse2` | Pakota SSE2 vertailumittausta varten |
 | `/selftest` | Aja laskennan tarkistus |
+| `/run` | Aja ring3-koe, jonka tulos on 42 |
+| `/run add 12 30` | Laske kahden luvun summa ring3:ssa |
+| `/run tests` | Tarkista paluu, poikkeukset ja silmukan pysäyttäminen |
+| `/run help` | Näytä prosessikokeiden ohje |
 | `/help` | Näytä ohje |
 | `/quit` | Sammuta kone UEFI:n kautta |
+
+## Kevyt ring3-prosessi
+
+Kokeet voi ajaa nimillä ilman konekooditavuja: `/run`, `/run add 12 30`,
+`/run div0`, `/run ud2`, `/run memory`, `/run hlt` ja `/run loop`.
+`/run tests` ajaa kaikki kuusi perustarkistusta. Tulos näkyy desimaalina,
+ja poikkeuksesta tulostetaan myös nimi ja virheen osoite. `/run help` näyttää
+ohjeen. Edistynyt `/exec HEX` säilyy; se lisää `int 0x80` -lopetuksen tavujen
+perään. Mallille tarkoitettu minimaalinen `asm1`-kääntäjä on käytettävissä
+komennolla `/asm SOURCE` (rivinvaihdot voi korvata puolipisteillä). Se kääntää
+rajatun kokonaislukukielen suoraan ring3-prosessiksi; kieli ja rajat ovat
+[docs/asm1.md](docs/asm1.md).
+
+Prosessi saa 4 KiB muuttumattoman koodisivun ja 8 KiB NX-pinon suojaussivuineen.
+Kernelin muisti ei ole käyttäjätilan käytettävissä. Trap Flag rajoittaa ajon
+100 000 askeleeseen; askelluksen ohittavat käskyt hylätään konservatiivisella
+tavutarkistuksella. Käytössä ovat kokonaislukukäskyt, x87 ja SSE2; käyttäjäkoodin
+AVX on tässä versiossa pois käytöstä. Firmware- ja liukulukutila palautetaan
+ennen paluuta main loopille. Mallin SIMD-valinta toimii erikseen.
+Rajapinta ja rajoitukset: [docs/process.md](docs/process.md).
+
+`make test-process` käynnistää oikean prosessitoteutuksen QEMU/OVMF:ssä yhdellä
+ja neljällä virtuaaliytimellä ilman mallin latausta. Testiin tarvitaan
+`qemu-system-x86` ja `ovmf`. Tavallinen `make test` ajaa lisäksi komentotulkin
+kehityskonetestit. Pelkkä käännös tai isäntäkoneen testi ei testaa ring-siirtymiä.
 
 `Compute:`-rivi näyttää todellisen workerien määrän ja tilan: `MP pool`,
 `MP blocking` tai `serial`. Vastauksen lopussa näkyy myös tokenia sekunnissa.
