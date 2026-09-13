@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export the pinned SmolLM2 checkpoint to the project's SMOLQ4 format."""
+"""Export the pinned Qwen2.5-Coder-1.5B-Instruct checkpoint to the project's QWENQ4 format."""
 
 import argparse
 import json
@@ -16,18 +16,19 @@ except ImportError as exc:
     ) from exc
 
 
-D = 2048
-H = 8192
-LAYERS = 24
-HEADS = 32
-KV_HEADS = 32
-KV_DIM = 2048
-VOCAB = 49152
-MAX_CONTEXT = 8192
+D = 1536
+H = 8960
+LAYERS = 28
+HEADS = 12
+KV_HEADS = 2
+KV_DIM = 256
+VOCAB = 151936
+MAX_CONTEXT = 32768
 GROUP = 32
-SPECIALS = 17
+TOKEN_BASE = 151643
+SPECIALS = 22  # All added tokens, including eight non-special code/tool markers.
 EXPECTED_RANGES = 807
-EXPECTED_SIZE = 964120960
+EXPECTED_SIZE = 872253632
 
 
 def fail(message):
@@ -41,6 +42,8 @@ def load_json(path):
 
 def check_config(config):
     expected = {
+        "model_type": "qwen2",
+        "hidden_act": "silu",
         "hidden_size": D,
         "intermediate_size": H,
         "num_hidden_layers": LAYERS,
@@ -48,13 +51,12 @@ def check_config(config):
         "num_key_value_heads": KV_HEADS,
         "vocab_size": VOCAB,
         "max_position_embeddings": MAX_CONTEXT,
-        "bos_token_id": 1,
-        "eos_token_id": 2,
-        "rms_norm_eps": 1e-5,
-        "rope_theta": 130000,
+        "bos_token_id": 151643,
+        "eos_token_id": 151645,
+        "rms_norm_eps": 1e-6,
+        "rope_theta": 1000000,
         "tie_word_embeddings": True,
-        "attention_bias": False,
-        "mlp_bias": False,
+        "use_sliding_window": False,
         "rope_scaling": None,
     }
     for name, value in expected.items():
@@ -102,27 +104,28 @@ def tokenizer_tables(tokenizer):
         fail("unsupported tokenizer model")
 
     vocab = model.get("vocab", {})
-    if len(vocab) != VOCAB or set(vocab.values()) != set(range(VOCAB)):
-        fail("tokenizer vocabulary is not a complete 49152-entry ID map")
-    tokens = [None] * VOCAB
+    if len(vocab) != TOKEN_BASE or set(vocab.values()) != set(range(TOKEN_BASE)):
+        fail("tokenizer vocabulary is not a complete 151643-entry ID map")
+    tokens = [f"<[unused_{i}]>" for i in range(VOCAB)]
     for token, token_id in vocab.items():
         tokens[token_id] = token
 
     added = tokenizer.get("added_tokens", [])
     if len(added) != SPECIALS or [item.get("id") for item in added] != list(
-        range(SPECIALS)
+        range(TOKEN_BASE, TOKEN_BASE + SPECIALS)
     ):
-        fail("expected special tokens at IDs 0 through 16")
+        fail("expected special tokens at IDs 151643 through 151664")
     for item in added:
         token_id = item["id"]
-        if not item.get("special") or item.get("content") != tokens[token_id]:
-            fail(f"invalid special token {token_id}")
+        if item.get("special") != (token_id < 151657):
+            fail(f"invalid special-token flag {token_id}")
+        tokens[token_id] = item["content"]
 
     encoded_bytes = byte_alphabet()
     decoded_bytes = {character: byte for byte, character in encoded_bytes.items()}
     pieces = []
     for token_id, token in enumerate(tokens):
-        if token_id < SPECIALS:
+        if token_id >= TOKEN_BASE:
             piece = token.encode("utf-8")
         else:
             try:
@@ -149,7 +152,7 @@ def tokenizer_tables(tokenizer):
             merges.append((vocab[left], vocab[right], vocab[left + right]))
         except KeyError as exc:
             fail(f"merge at rank {rank} references missing token {exc.args[0]!r}")
-    if len(merges) != 48900:
+    if len(merges) != 151387:
         fail(f"unexpected merge count {len(merges)}")
 
     return byte_ids, pieces, merges, unicode_ranges()
@@ -160,6 +163,9 @@ def tensor_names():
     suffixes = (
         "input_layernorm.weight",
         "post_attention_layernorm.weight",
+        "self_attn.q_proj.bias",
+        "self_attn.k_proj.bias",
+        "self_attn.v_proj.bias",
         "self_attn.q_proj.weight",
         "self_attn.k_proj.weight",
         "self_attn.v_proj.weight",
@@ -175,19 +181,31 @@ def tensor_names():
 
 class SafeTensors:
     def __init__(self, path):
-        self.path = path
-        with path.open("rb") as source:
-            encoded_length = source.read(8)
-            if len(encoded_length) != 8:
-                fail("truncated safetensors header")
-            header_length = struct.unpack("<Q", encoded_length)[0]
-            if header_length > path.stat().st_size - 8:
-                fail("invalid safetensors header length")
-            self.metadata = json.loads(source.read(header_length))
-        self.data_offset = 8 + header_length
-        present = set(self.metadata) - {"__metadata__"}
-        if present != tensor_names():
-            fail("safetensors tensor names do not match SmolLM2-1.7B")
+        index = load_json(path) if path.suffix == ".json" else None
+        self.metadata = {}
+        self.locations = {}
+        filenames = sorted(set(index["weight_map"].values())) if index else [path.name]
+        for filename in filenames:
+            shard = path.parent / filename
+            if shard.parent != path.parent or shard.name != filename:
+                fail("invalid shard filename")
+            with shard.open("rb") as source:
+                encoded_length = source.read(8)
+                if len(encoded_length) != 8:
+                    fail("truncated safetensors header")
+                length = struct.unpack("<Q", encoded_length)[0]
+                if length > min(shard.stat().st_size - 8, 16 * 1024 * 1024):
+                    fail("invalid safetensors header length")
+                metadata = json.loads(source.read(length))
+            for name, entry in metadata.items():
+                if name == "__metadata__":
+                    continue
+                if name in self.metadata or (index and index["weight_map"].get(name) != filename):
+                    fail("inconsistent safetensors index")
+                self.metadata[name] = entry
+                self.locations[name] = (shard, 8 + length)
+        if set(self.metadata) != tensor_names():
+            fail("safetensors tensor names do not match Qwen2.5-Coder-1.5B")
 
     def bf16(self, name, shape):
         metadata = self.metadata[name]
@@ -197,19 +215,22 @@ class SafeTensors:
         count = math.prod(shape)
         if first < 0 or last - first != count * 2:
             fail(f"invalid tensor offsets for {name}")
+        path, data_offset = self.locations[name]
+        if data_offset + last > path.stat().st_size:
+            fail(f"truncated tensor {name}")
         raw = np.memmap(
-            self.path,
+            path,
             mode="r",
             dtype="<u2",
-            offset=self.data_offset + first,
+            offset=data_offset + first,
             shape=(count,),
         )
         values = (raw.astype("<u4") << np.uint32(16)).view("<f4")
         return values.reshape(shape)
 
 
-def write_norm(output, tensors, name):
-    values = tensors.bf16(name, (D,))
+def write_norm(output, tensors, name, width=D):
+    values = tensors.bf16(name, (width,))
     output.write(values.astype("<f4", copy=False).tobytes())
 
 
@@ -247,7 +268,7 @@ def write_model(output_path, config, tokenizer, tensors):
     with temporary.open("wb") as output:
         header = struct.pack(
             "<8s14I2f",
-            b"SMOLQ4\0\0",
+            b"QWENQ4\0\0",
             1,
             D,
             H,
@@ -283,6 +304,9 @@ def write_model(output_path, config, tokenizer, tensors):
             base = f"model.layers.{layer}."
             write_norm(output, tensors, base + "input_layernorm.weight")
             write_norm(output, tensors, base + "post_attention_layernorm.weight")
+            write_norm(output, tensors, base + "self_attn.q_proj.bias", D)
+            write_norm(output, tensors, base + "self_attn.k_proj.bias", KV_DIM)
+            write_norm(output, tensors, base + "self_attn.v_proj.bias", KV_DIM)
             write_q4(output, tensors, base + "self_attn.q_proj.weight", (D, D))
             write_q4(output, tensors, base + "self_attn.k_proj.weight", (KV_DIM, D))
             write_q4(output, tensors, base + "self_attn.v_proj.weight", (KV_DIM, D))
@@ -291,8 +315,9 @@ def write_model(output_path, config, tokenizer, tensors):
             write_q4(output, tensors, base + "mlp.up_proj.weight", (H, D))
             write_q4(output, tensors, base + "mlp.down_proj.weight", (D, H))
 
+
     size = temporary.stat().st_size
-    if size != EXPECTED_SIZE:
+    if EXPECTED_SIZE is not None and size != EXPECTED_SIZE:
         fail(f"unexpected output size {size}, expected {EXPECTED_SIZE}")
 
 

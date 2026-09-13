@@ -1,18 +1,20 @@
-/* SmolLM2-1.7B-Instruct inference for the x86-64 UEFI application.
+/* Qwen2.5-Coder-1.5B-Instruct inference for the x86-64 UEFI application.
  * Q4 weights are loaded from USB once and read directly from RAM. */
 #include "baremetal/runtime.h"
 #include "baremetal/asm1_prompt.h"
+#include "baremetal/model_tokens.h"
 #include <immintrin.h>
 
-enum { D=2048, H=8192, L=24, NH=32, NK=32, V=49152, HS=64, KD=2048,
-       G=32, BLOCK=18, MAXCTX=8192, HASH=131072, MODEL_BYTES=964120960 };
+enum { D=1536, H=8960, L=28, NH=12, NK=2, V=151936, HS=128, KD=256,
+       G=32, BLOCK=18, MAXCTX=8192, HASH=524288 };
+#define MODEL_BYTES UINT64_C(872253632)
 typedef struct { const unsigned char *p; uint32_t n; } Word;
 typedef struct { uint32_t a, b, out, rank; } Merge;
-typedef struct { const float *n1, *n2; const unsigned char *q,*k,*v,*o,*gate,*up,*down; } Layer;
+typedef struct { const float *n1, *n2, *qb, *kb, *vb; const unsigned char *q,*k,*v,*o,*gate,*up,*down; } Layer;
 typedef struct {
-    const unsigned char *map, *end, *embed, *ranges;
+    const unsigned char *map, *end, *embed, *output, *ranges;
     size_t size;
-    uint32_t byte_id[256], nspecial, nrange;
+    uint32_t byte_id[256], nadded, nrange;
     Word words[V];
     Merge merges[HASH];
     Layer layers[L];
@@ -42,17 +44,17 @@ static Merge *pair(Model *m, uint32_t a, uint32_t b) {
 }
 static void init_model(Model *m, const void *data, size_t size) {
     if (sizeof(float)!=4 || u32("\1\0\0\0")!=1) die("requires little-endian IEEE float32 host");
-    if (size!=MODEL_BYTES) die("invalid SmolLM2-1.7B model size");
+    if (size!=MODEL_BYTES) die("invalid Qwen2.5-Coder-1.5B model size");
     m->size=size; m->map=data; m->end=m->map+size;
     const unsigned char *p=m->map;
-    if (memcmp(p,"SMOLQ4\0\0",8)) die("bad model magic");
-    const uint32_t expected[]={1,D,H,L,NH,NK,V,MAXCTX,G,1,2};
+    if (memcmp(p,"QWENQ4\0\0",8)) die("bad model magic");
+    const uint32_t expected[]={1,D,H,L,NH,NK,V,32768,G,MODEL_BOS,MODEL_EOS};
     for (unsigned i=0;i<sizeof(expected)/sizeof(*expected);i++)
         if (u32(p+8+4*i)!=expected[i]) die("unsupported model configuration");
-    m->nspecial=u32(p+52);
+    m->nadded=u32(p+52);
     uint32_t nm=u32(p+56); m->nrange=u32(p+60);
     memcpy(&m->eps,p+64,4); memcpy(&m->theta,p+68,4);
-    if (m->nspecial!=17 || nm>60000 || m->nrange>5000 ||
+    if (m->nadded!=MODEL_ADDED_COUNT || nm!=151387 || m->nrange>5000 ||
         !isfinite(m->eps) || m->eps<=0 || !isfinite(m->theta) || m->theta<=0)
         die("invalid model header");
     p+=256;
@@ -85,11 +87,14 @@ static void init_model(Model *m, const void *data, size_t size) {
     for (int i=0;i<L;i++) {
         Layer *l=&m->layers[i];
         l->n1=(const float *)take(m,&p,D*4); l->n2=(const float *)take(m,&p,D*4);
+        l->qb=(const float *)take(m,&p,D*4);
+        l->kb=(const float *)take(m,&p,KD*4); l->vb=(const float *)take(m,&p,KD*4);
         l->q=take(m,&p,D*D/G*BLOCK); l->k=take(m,&p,KD*D/G*BLOCK);
         l->v=take(m,&p,KD*D/G*BLOCK); l->o=take(m,&p,D*D/G*BLOCK);
         l->gate=take(m,&p,H*D/G*BLOCK); l->up=take(m,&p,H*D/G*BLOCK);
         l->down=take(m,&p,D*H/G*BLOCK);
     }
+    m->output=m->embed; /* Tied embedding/output weights. */
     if (p!=m->end) die("unexpected trailing model data");
 }
 /* UTF-8 decoder: reject malformed input instead of silently changing the prompt. */
@@ -145,44 +150,62 @@ static void bpe(Model *m, const unsigned char *s, size_t len, int *ids, int *n, 
     for (size_t i=0;i<len;i++) emit(ids,n,cap,tmp[i]);
     free(tmp);
 }
-static void bytelevel(Model *m, const unsigned char *s, size_t len, int *ids, int *n, int cap) {
+#include "baremetal/nfc.h"
+/* Qwen's case-insensitive contractions and Unicode pre-token regex. */
+static void ordinary(Model *m, const unsigned char *input, size_t length, int *ids, int *n, int cap) {
+    size_t len;
+    unsigned char *s=normalize_nfc(input,length,&len);
     static const char *contractions[]={"'s","'t","'re","'ve","'m","'ll","'d"};
     size_t i=0;
     while (i<len) {
         size_t end=i,k;
         for (unsigned j=0;j<7;j++) {
-            size_t l=strlen(contractions[j]);
-            if (l<=len-i && !memcmp(s+i,contractions[j],l)) { end=i+l; break; }
-        }
-        if (end==i) {
-            size_t start=i+(s[i]==' ' && i+1<len);
-            int cat=kind_at(m,s+start,len-start,&k);
-            if (cat!=3) {
-                end=start+k;
-                while (end<len && kind_at(m,s+end,len-end,&k)==cat) end+=k;
-            } else {
-                end=i;
-                size_t previous=i;
-                while (end<len && kind_at(m,s+end,len-end,&k)==3) { previous=end; end+=k; }
-                /* GPT-2 \s+(?!\S): leave the final whitespace for the next piece. */
-                if (end<len && previous>i) end=previous;
+            size_t l=strlen(contractions[j]),matched=0;
+            if (l>len-i) continue;
+            while (matched<l) {
+                unsigned char c=s[i+matched];
+                if (c>='A' && c<='Z') c+=32;
+                if (c!=(unsigned char)contractions[j][matched]) break;
+                matched++;
             }
+            if (matched==l) { end=i+l; break; }
+        }
+        int cat=kind_at(m,s+i,len-i,&k);
+        if (end==i) {
+            /* An optional non-letter/number/newline prefix before letters. */
+            size_t start=i;
+            if (cat!=1 && cat!=2 && s[i]!='\r' && s[i]!='\n' && i+k<len) {
+                size_t next;
+                if (kind_at(m,s+i+k,len-i-k,&next)==1) start=i+k;
+            }
+            size_t letter;
+            if (kind_at(m,s+start,len-start,&letter)==1) {
+                end=start+letter;
+                while (end<len && kind_at(m,s+end,len-end,&letter)==1) end+=letter;
+            }
+        }
+        if (end==i && cat==2) end=i+k;
+        if (end==i) {
+            size_t start=i+(s[i]==' ' && i+1<len),symbol;
+            int c=kind_at(m,s+start,len-start,&symbol);
+            if (c==0) {
+                end=start+symbol;
+                while (end<len && kind_at(m,s+end,len-end,&symbol)==0) end+=symbol;
+                while (end<len && (s[end]=='\r' || s[end]=='\n')) end++;
+            }
+        }
+        if (end==i && cat==3) {
+            size_t scan=i,previous=i,newline=i;
+            while (scan<len && kind_at(m,s+scan,len-scan,&k)==3) {
+                previous=scan; scan+=k;
+                if (s[previous]=='\r' || s[previous]=='\n') newline=scan;
+            }
+            end=newline>i ? newline : scan<len && previous>i ? previous : scan;
         }
         if (end<=i) die("tokenizer made no progress");
         bpe(m,s+i,end-i,ids,n,cap); i=end;
     }
-}
-static void ordinary(Model *m, const unsigned char *s, size_t len, int *ids, int *n, int cap) {
-    /* Digits(individual_digits=true) runs BEFORE the GPT-2 ByteLevel regex. */
-    size_t start=0,i=0,k;
-    while (i<len) {
-        if (kind_at(m,s+i,len-i,&k)==2) {
-            if (i>start) bytelevel(m,s+start,i-start,ids,n,cap);
-            bpe(m,s+i,k,ids,n,cap); start=i+k;
-        }
-        i+=k;
-    }
-    if (start<len) bytelevel(m,s+start,len-start,ids,n,cap);
+    free(s);
 }
 static int tokenize(Model *m, const char *text, int *ids, int cap, int special) {
     const unsigned char *s=(const unsigned char *)text;
@@ -190,7 +213,7 @@ static int tokenize(Model *m, const char *text, int *ids, int cap, int special) 
     int n=0;
     while (i<len) {
         int found=-1;
-        if (special && s[i]=='<') for (uint32_t j=0;j<m->nspecial;j++) {
+        if (special && s[i]=='<') for (uint32_t j=MODEL_ADDED_START;j<MODEL_ADDED_START+m->nadded;j++) {
             Word w=m->words[j];
             if (w.n<=len-i && !memcmp(s+i,w.p,w.n)) { found=(int)j; break; }
         }
@@ -340,6 +363,7 @@ static void rotate(float *x, int heads, const float *rope) {
 static void forward(Model *m, State *s, int token, int project) {
     bm_fp_prepare();
     int pos=s->pos,ctx=s->ctx;
+    const float attention_scale=1.0f/sqrtf((float)HS);
     if (pos>=ctx || token<0 || token>=V) die("forward input out of bounds");
     embedding(s->x,m->embed+(size_t)token*(D/G)*BLOCK);
     bm_check_finite("embedding",s->x,D,pos,-1);
@@ -347,6 +371,8 @@ static void forward(Model *m, State *s, int token, int project) {
         Layer *w=&m->layers[l];
         rmsnorm(s->xb,s->x,w->n1,m->eps);
         matvec(s->q,w->q,s->xb,D,D); matvec(s->k,w->k,s->xb,KD,D); matvec(s->v,w->v,s->xb,KD,D);
+        for (int j=0;j<D;j++) s->q[j]+=w->qb[j];
+        for (int j=0;j<KD;j++) { s->k[j]+=w->kb[j]; s->v[j]+=w->vb[j]; }
         rotate(s->q,NH,s->rope+pos*HS); rotate(s->k,NK,s->rope+pos*HS);
         float *kc=s->keys+(size_t)l*ctx*KD, *vc=s->values+(size_t)l*ctx*KD;
         memcpy(kc+(size_t)pos*KD,s->k,sizeof(s->k)); memcpy(vc+(size_t)pos*KD,s->v,sizeof(s->v));
@@ -357,7 +383,7 @@ static void forward(Model *m, State *s, int token, int project) {
                 const float *k=kc+(size_t)t*KD+kh;
                 float dot=0;
                 for (int j=0;j<HS;j++) dot+=q[j]*k[j];
-                a[t]=dot*(1.0f/8.0f); /* sqrt(head_dim) = 8 */
+                a[t]=dot*attention_scale;
             }
             softmax(a,pos+1);
             float *out=s->xb+h*HS; memset(out,0,HS*sizeof(float));
@@ -377,7 +403,7 @@ static void forward(Model *m, State *s, int token, int project) {
     }
     if (project) {
         rmsnorm(s->xb,s->x,m->norm,m->eps);
-        matvec(s->logits,m->embed,s->xb,V,D); /* tied embedding/output weights */
+        matvec(s->logits,m->output,s->xb,V,D); /* Tied output projection. */
         bm_check_finite("logits",s->logits,V,pos,L);
     }
     s->pos++;
@@ -393,10 +419,11 @@ static int greedy(const float *logits) {
     return best;
 }
 static int turn_tokens(Model *m, const char *prompt, int first, int *ids, int cap) {
-    const char *system="<|im_start|>system\n" ASM1_SYSTEM_PROMPT "<|im_end|>\n" ASM1_EXAMPLES;
+    const char *system="<|im_start|>system\n" ASM1_SYSTEM_PROMPT "<|im_end|>\n";
     size_t size=strlen(prompt)+strlen(system)+128;
     char *text=alloc(size);
-    const char *parts[]={first ? system : "","<|im_start|>user\n",prompt,"<|im_end|>\n<|im_start|>assistant\n"};
+    const char *parts[]={first ? system : "","<|im_start|>user\n",prompt,
+        "<|im_end|>\n<|im_start|>assistant\n"};
     size_t at=0;
     for (unsigned i=0;i<4;i++) { size_t len=strlen(parts[i]); memcpy(text+at,parts[i],len); at+=len; }
     text[at]=0;

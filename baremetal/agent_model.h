@@ -2,6 +2,7 @@
 #define SMOL_AGENT_MODEL_H
 /* Include after neural.c. This adapter is shared by UEFI and the host smoke test. */
 #include "agent.h"
+#include "model_tokens.h"
 typedef struct { Model *model; State *state; int *ids; } agent_model;
 
 static void agent_model_generate(void *context, unsigned budget, unsigned reserve, agent_reply *reply) {
@@ -13,8 +14,8 @@ static void agent_model_generate(void *context, unsigned budget, unsigned reserv
         if (s->pos+(int)reserve>=s->ctx) { reply->stop=AGENT_CONTEXT_LIMIT; break; }
         int token=greedy(s->logits);
         reply->tokens++;
-        if (token==2) { reply->stop=AGENT_END; break; }
-        if ((unsigned)token<m->nspecial) { reply->stop=AGENT_INVALID_TOKEN; break; }
+        if (model_token_end(token)) { reply->stop=AGENT_END; break; }
+        if (!model_token_text(token)) { reply->stop=AGENT_INVALID_TOKEN; break; }
         Word w=m->words[token];
         if (w.n>=sizeof(reply->text)-size) { reply->stop=AGENT_OUTPUT_LIMIT; break; }
         int invalid=0;
@@ -25,13 +26,13 @@ static void agent_model_generate(void *context, unsigned budget, unsigned reserv
     }
     /* Always close the assistant message, including an interrupted one. */
     if (s->pos+2<=s->ctx) {
-        forward(m,s,2,0); forward(m,s,(int)m->byte_id['\n'],0);
+        forward(m,s,MODEL_EOS,0); forward(m,s,(int)m->byte_id['\n'],0);
     }
     bm_parallel_end();
 }
 static int agent_model_feedback(void *context, const char *result, int final_only) {
     agent_model *a=context;
-    /* Use the model's existing user/assistant ChatML roles. Runtime output has
+    /* Use the model's existing user/assistant roles. Runtime output has
      * no model-controlled text or special tokens. No new tokenizer IDs needed. */
     char text[ASM1_FEEDBACK_SIZE+256]; size_t n=0;
     int success=!memcmp(result,"ok;",3);

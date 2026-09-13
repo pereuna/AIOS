@@ -4,11 +4,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#define BM_MODEL_PART_BYTES (2*1024*1024)
 #include "../baremetal/platform.c"
 
 enum { OK, SHORT_READ, NO_FS, NO_VOLUME, MISSING, BAD_INFO, BAD_SIZE,
-       DIRECTORY, NO_RAM, READ_ERROR, EARLY_EOF, OVERSIZED_READ, CLOSE_ERROR };
-static int scenario, closes;
+       DIRECTORY, NO_RAM, READ_ERROR, EARLY_EOF, OVERSIZED_READ, CLOSE_ERROR, MISSING_SECOND, BAD_SECOND_SIZE };
+static int scenario, closes, opened;
 static size_t position, length=3*1024*1024+7;
 static unsigned char *allocation;
 static char message[2048];
@@ -50,9 +51,10 @@ static EFI_STATUS EFIAPI volume(EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *self, EFI_FILE_
 static EFI_STATUS EFIAPI open_file(EFI_FILE_PROTOCOL *self, EFI_FILE_PROTOCOL **result,
                                    CHAR16 *path, UINT64 mode, UINT64 attributes) {
     assert(self==&root_file && mode==EFI_FILE_MODE_READ && attributes==0);
-    assert(!memcmp(path,L"\\model.bin",sizeof(L"\\model.bin")));
+    CHAR16 expected[]=L"\\model.000"; expected[9]+=(CHAR16)opened++;
+    assert(!memcmp(path,expected,sizeof(expected)));
     *result=&model_file;
-    return scenario==MISSING ? EFI_NOT_FOUND : EFI_SUCCESS;
+    return scenario==MISSING || (scenario==MISSING_SECOND && opened==2) ? EFI_NOT_FOUND : EFI_SUCCESS;
 }
 static EFI_STATUS EFIAPI information(EFI_FILE_PROTOCOL *self, EFI_GUID *guid, UINTN *size, void *buffer) {
     EFI_GUID expected=EFI_FILE_INFO_ID;
@@ -60,7 +62,8 @@ static EFI_STATUS EFIAPI information(EFI_FILE_PROTOCOL *self, EFI_GUID *guid, UI
     assert(*size>=sizeof(EFI_FILE_INFO));
     EFI_FILE_INFO *info=buffer;
     memset(info,0,sizeof(*info));
-    info->FileSize=length+(scenario==BAD_SIZE);
+    size_t remaining=length-(size_t)(opened-1)*BM_MODEL_PART_BYTES;
+    info->FileSize=(remaining>BM_MODEL_PART_BYTES ? BM_MODEL_PART_BYTES : remaining)+(scenario==BAD_SIZE || (scenario==BAD_SECOND_SIZE && opened==2));
     info->Attribute=scenario==DIRECTORY ? EFI_FILE_DIRECTORY : 0;
     *size=sizeof(*info);
     return scenario==BAD_INFO ? EFI_DEVICE_ERROR : EFI_SUCCESS;
@@ -86,7 +89,7 @@ static EFI_STATUS EFIAPI read_file(EFI_FILE_PROTOCOL *self, UINTN *count, void *
     return EFI_SUCCESS;
 }
 static EFI_STATUS EFIAPI close_file(EFI_FILE_PROTOCOL *self) {
-    assert(self==(closes ? &root_file : &model_file)); ++closes;
+    assert(self==(position==length && closes==opened ? &root_file : &model_file)); ++closes;
     return scenario==CLOSE_ERROR ? EFI_DEVICE_ERROR : EFI_SUCCESS;
 }
 int main(void) {
@@ -100,23 +103,23 @@ int main(void) {
     root_file.Open=open_file; root_file.Close=close_file;
     model_file.GetInfo=information; model_file.Read=read_file; model_file.Close=close_file;
     assert(bm_crc32("123456789",9)==0xcbf43926u);
-    const char *errors[]={NULL,NULL,"boot filesystem","boot volume","model.bin missing",
-        "wrong model.bin size","wrong model.bin size","wrong model.bin size",
-        "not enough RAM","cannot read model.bin","cannot read model.bin",
-        "cannot read model.bin","cannot close model file"};
-    for (scenario=OK;scenario<=CLOSE_ERROR;scenario++) {
-        allocation=NULL; position=0; closes=0; message_length=0; message[0]=0;
+    const char *errors[]={NULL,NULL,"boot filesystem","boot volume","model part missing",
+        "wrong model part size","wrong model part size","wrong model part size",
+        "not enough RAM","cannot read model part","cannot read model part",
+        "cannot read model part","cannot close model file","model part missing","wrong model part size"};
+    for (scenario=OK;scenario<=BAD_SECOND_SIZE;scenario++) {
+        allocation=NULL; position=0; closes=0; opened=0; message_length=0; message[0]=0;
         if (!setjmp(stopped)) {
             const unsigned char *data=bm_load_model(length);
             assert(scenario==OK || scenario==SHORT_READ);
-            assert(data==allocation && position==length && closes==2);
+            assert(data==allocation && position==length && closes==3);
             for (size_t i=0;i<length;i++) assert(data[i]==i%251);
         } else {
             assert(errors[scenario] && strstr(message,errors[scenario]));
-            if (scenario==CLOSE_ERROR) assert(closes==2);
+            if (scenario==CLOSE_ERROR) assert(closes==1);
         }
         free(allocation);
     }
-    puts("UEFI file loader: 13 cases passed; CRC32 known vector passed");
+    puts("UEFI file loader: 15 cases with split files passed; CRC32 known vector passed");
     return 0;
 }

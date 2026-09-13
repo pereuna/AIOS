@@ -33,8 +33,10 @@ done
 [[ "$(lsblk -dnro RM "$disk")" == 1 ]] || { echo "Refusing non-removable disk (RM is not 1): $disk" >&2; exit 1; }
 
 efi="$source_dir/dist/EFI/BOOT/BOOTX64.EFI"
-model="$source_dir/dist/model.bin"
-[[ -f "$efi" && -f "$model" ]] || { echo "Build dist first: missing EFI image or model.bin in $source_dir/dist" >&2; exit 1; }
+models=("$source_dir/dist/model.000")
+for file in "$efi" "${models[@]}"; do
+    [[ -f "$file" ]] || { echo "Build dist first: missing $file" >&2; exit 1; }
+done
 
 part="${disk}1"
 [[ "$disk" == /dev/nvme* || "$disk" == /dev/mmcblk* ]] && part="${disk}p1"
@@ -101,6 +103,8 @@ copy_file() {
 }
 
 copy_file "$efi" "$mountpoint/EFI/BOOT/BOOTX64.EFI"
-copy_file "$model" "$mountpoint/model.bin"
+for model in "${models[@]}"; do
+    copy_file "$model" "$mountpoint/${model##*/}"
+done
 sync
 echo "USB boot image ready on $part"

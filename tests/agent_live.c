@@ -1,6 +1,7 @@
 /* Optional slow test: actual Q4 model -> asm1 -> ring3 -> model answer. */
 #include "../neural.c"
 #include "../baremetal/agent_model.h"
+#include "../baremetal/asm1_prompt.h"
 
 static unsigned successes, answers;
 static void log_text(const char *s) {
@@ -30,7 +31,10 @@ _Noreturn void bm_main(void) {
     const void *data=bm_load_model(MODEL_BYTES);
     Model *m=alloc(sizeof(*m)); init_model(m,data,MODEL_BYTES);
     State *s=new_state(m,2048); int *ids=alloc(MAXCTX*sizeof(int));
-    int n=turn_tokens(m,"What is 17+25?",1,ids,MAXCTX);
+    /* Opt in here: normal chat only displays asm1 code for the user to run. */
+    const char *prompt="<|im_start|>system\n" ASM1_AGENT_SYSTEM_PROMPT "<|im_end|>\n"
+        "<|im_start|>user\nWhat is 17+25?<|im_end|>\n<|im_start|>assistant\n";
+    int n=tokenize(m,prompt,ids,MAXCTX,1);
     if (n+AGENT_CONTEXT_RESERVE+64>s->ctx) finish(0);
     log_text("LIVE AGENT: prompt inference");
     bm_parallel_begin();

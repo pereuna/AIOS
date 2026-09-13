@@ -2,8 +2,6 @@
 #include "../neural.c"
 #include "../.build/config.h"
 #include "process_console.h"
-#include "asm1.h"
-#include "agent_model.h"
 
 static void elapsed(uint64_t ticks) {
     bm_uint(ticks/100); bm_putc('.');
@@ -39,8 +37,33 @@ static void help(void) {
             "/threads N   1..4 workers (1 = serial comparison)\n"
             "/simd auto|sse2   select matvec instructions\n"
             "/run     ring3 test             /run help   process commands\n"
-            "/asm SOURCE   asm1; AI calls run automatically (max 3 per question)\n"
-            "/help    show help              /quit       power off\n");
+            "/asm SOURCE   compile and run asm1 (use ';' for newlines)\n"
+            "/help    show help              /quit       power off\n"
+            "\n"
+            "asm1 commands (space-separated operands; no commas):\n"
+            "  li rd N       load constant N (uint32 0..4294967295)\n"
+            "  mov rd rs     copy register rs to rd\n"
+            "  add rd rs     rd = rd + rs\n"
+            "  sub rd rs     rd = rd - rs\n"
+            "  mul rd rs     rd = rd * rs\n"
+            "  udiv rd rs    unsigned rd = rd / rs\n"
+            "  umod rd rs    unsigned rd = rd % rs\n"
+            "  and rd rs     bitwise AND into rd\n"
+            "  or rd rs      bitwise OR into rd\n"
+            "  xor rd rs     bitwise XOR into rd\n"
+            "  shl rd rs     shift rd left by (rs & 31)\n"
+            "  shr rd rs     shift rd right by (rs & 31)\n"
+            "  eq rd rs      rd = 1 if old rd == rs, otherwise 0\n"
+            "  lt rd rs      rd = 1 if old rd < rs (unsigned), otherwise 0\n"
+            "  ld rd I       load memory cell I (0..255) into rd\n"
+            "  st I rs       store rs into memory cell I (0..255)\n"
+            "  input A B ...  initialize memory cells 0, 1, ... (max 64)\n"
+            "  label lK      define label l0..l31\n"
+            "  jmp lK        unconditional jump\n"
+            "  jz rN lK      jump if register rN is zero\n"
+            "  exit rN       return register rN (required)\n"
+            "Registers are r0..r9; arithmetic wraps modulo 2^32.\n"
+            "Optional source markers: asm1 and end; end must be last.\n");
 }
 static void math_check(void) {
     bm_fp_prepare();
@@ -55,7 +78,7 @@ static void math_check(void) {
     bm_puts("Math: SSE2; startup check OK (2026-09-10).\n");
 }
 static void selftest(Model *m) {
-    const int tokens[]={1,9690,198,19556};
+    const int tokens[]={151644,872,198,3838};
     const int probes[]={0,1,2,17,198,216,999,1000,4096,9690,16384,19556,24576,32768,40000,49151};
     size_t before=bm_heap_available();
     State *s=new_state(m,8);
@@ -80,10 +103,6 @@ static void selftest(Model *m) {
     if (bm_heap_available()!=before) bm_panic("selftest leaked heap memory");
     bm_puts("SELFTEST END heap restored\n");
 }
-static void agent_display(void *context, const char *text, int tool) {
-    (void)context;
-    bm_puts(tool ? "asm1: " : "AI> "); bm_puts(text); bm_putc('\n');
-}
 static void respond(Model *m, State *s, int *ids, int n, int limit) {
     bm_simd_reset();
     bm_parallel_begin();
@@ -91,22 +110,36 @@ static void respond(Model *m, State *s, int *ids, int n, int limit) {
     uint64_t start=bm_ticks;
     for (int i=0;i<n;i++) forward(m,s,ids[i],i==n-1);
     uint64_t ready=bm_ticks;
+    unsigned count=0;
+    const char *stop="token limit reached";
+    bm_puts("AI> ");
+    while (count<(unsigned)limit) {
+        if (s->pos+2>=s->ctx) { stop="context limit reached"; break; }
+        int token=greedy(s->logits);
+        count++;
+        if (model_token_end(token)) { stop="complete"; break; }
+        if (!model_token_text(token)) { stop="invalid control token"; break; }
+        Word w=m->words[token];
+        int invalid=0;
+        for (unsigned i=0;i<w.n;i++) if (!w.p[i]) invalid=1;
+        if (invalid) { stop="invalid control token"; break; }
+        bm_write(w.p,w.n);
+        forward(m,s,token,1);
+    }
+    /* Close the assistant turn even when generation reaches a limit. */
+    forward(m,s,MODEL_EOS,0); forward(m,s,(int)m->byte_id['\n'],0);
     bm_parallel_end();
-    agent_model model={m,s,ids};
-    agent_io io={&model,agent_model_generate,agent_model_feedback,agent_display};
-    agent_result result=agent_run(&io,(unsigned)limit);
     uint64_t end=bm_ticks;
     bm_puts("\n[prompt "); bm_uint((unsigned)n); bm_puts(" tokens, "); elapsed(ready-start);
-    bm_puts("s; output "); bm_uint(result.tokens); bm_puts(" tokens, "); elapsed(end-ready);
-    bm_puts("s; "); rate(result.tokens,end-ready); bm_puts(" tok/s (including tools/feedback); ");
+    bm_puts("s; output "); bm_uint(count); bm_puts(" tokens, "); elapsed(end-ready);
+    bm_puts("s; "); rate(count,end-ready); bm_puts(" tok/s; ");
     bm_puts(bm_parallel_mode()); bm_putc(' '); bm_uint(bm_parallel_count()); bm_puts(" workers");
     bm_puts("; "); bm_puts(bm_simd_used());
-    bm_puts("; calls="); bm_uint(result.calls); bm_puts("; ");
-    bm_puts(agent_stop(result.stop)); bm_puts("]\n");
+    bm_puts("; "); bm_puts(stop); bm_puts("]\n");
 }
 _Noreturn void bm_main(void) {
     bm_init();
-    bm_puts("Smol bare metal / x86-64 UEFI\nUEFI USB -> RAM -> neural.c\n");
+    bm_puts("AIOS bare metal / x86-64 UEFI\nUEFI USB -> RAM -> neural.c\n");
     math_check();
     size_t state_bytes=sizeof(State)+(size_t)BOOT_CONTEXT*(2*L*KD+NH+HS)*4+sizeof(Model);
     bm_reserve_heap(state_bytes+16*1024*1024);
@@ -123,7 +156,7 @@ _Noreturn void bm_main(void) {
     int limit=BOOT_TOKENS;
     bm_parallel_begin(); bm_parallel_end(); /* Discover the usable dispatch mode. */
     workers_status();
-    bm_puts("SmolLM2-1.7B-Instruct Q4; context "); bm_uint(BOOT_CONTEXT); bm_puts(" tokens.\n");
+    bm_puts("Qwen2.5-Coder-1.5B-Instruct Q4; context "); bm_uint(BOOT_CONTEXT); bm_puts(" tokens.\n");
     help();
     for (;;) {
         bm_puts("YOU> ");
@@ -164,10 +197,10 @@ _Noreturn void bm_main(void) {
         }
         if (line[0]=='/') { bm_puts("Unknown command. Use /help or /run help.\n"); continue; }
         int n=turn_tokens(m,line,s->pos==0,ids,MAXCTX);
-        if (n+AGENT_CONTEXT_RESERVE+64>s->ctx) { bm_puts("Question and tool instructions exceed context. Shorten it or build with CONTEXT=2048 or larger.\n"); continue; }
-        if (s->pos+n+AGENT_CONTEXT_RESERVE+64>s->ctx) {
+        if (n+3>s->ctx) { bm_puts("Question exceeds context. Shorten it.\n"); continue; }
+        if (s->pos+n+3>s->ctx) {
             n=turn_tokens(m,line,1,ids,MAXCTX);
-            if (n+AGENT_CONTEXT_RESERVE+64>s->ctx) { bm_puts("Question and tool instructions exceed context. Shorten it or increase CONTEXT.\n"); continue; }
+            if (n+3>s->ctx) { bm_puts("Question exceeds context. Shorten it.\n"); continue; }
             s->pos=0; bm_puts("[context full; starting a new conversation]\n");
         }
         respond(m,s,ids,n,limit);

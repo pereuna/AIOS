@@ -131,33 +131,43 @@ const void *bm_load_model(size_t bytes) {
         EFI_ERROR(services->HandleProtocol(loaded->DeviceHandle,&fs_guid,(void **)&fs)))
         bm_panic("cannot open boot filesystem");
     if (EFI_ERROR(fs->OpenVolume(fs,&root))) bm_panic("cannot open boot volume");
-    if (EFI_ERROR(root->Open(root,&file,L"\\model.bin",EFI_FILE_MODE_READ,0)))
-        bm_panic("model.bin missing from USB root; copy dist/model.bin to the boot USB");
-    /* Fixed name model.bin needs only 20 bytes beyond the fixed EFI_FILE_INFO. */
-    union { EFI_FILE_INFO info; unsigned char bytes[512]; } info_buffer;
-    UINTN info_size=sizeof(info_buffer);
-    EFI_FILE_INFO *info=&info_buffer.info;
-    if (EFI_ERROR(file->GetInfo(file,&info_guid,&info_size,info)) ||
-        info_size<SIZE_OF_EFI_FILE_INFO || (info->Attribute&EFI_FILE_DIRECTORY) ||
-        info->FileSize!=bytes)
-        bm_panic("wrong model.bin size; copy the SmolLM2-1.7B model built with this EFI");
     EFI_PHYSICAL_ADDRESS address=0;
     if (bytes>SIZE_MAX-4095 ||
         EFI_ERROR(services->AllocatePages(AllocateAnyPages,EfiLoaderData,(bytes+4095)/4096,&address)))
         bm_panic("not enough RAM for model");
     unsigned char *data=(unsigned char *)(uintptr_t)address;
-    bm_puts("Loading model.bin from USB");
-    for (size_t at=0,progress=0;at<bytes;) {
-        UINTN chunk=bytes-at>1024*1024 ? 1024*1024 : bytes-at;
-        UINTN count=chunk;
-        if (EFI_ERROR(file->Read(file,&count,data+at)) || !count || count>chunk)
-            bm_panic("cannot read model.bin; check the USB stick");
-        at+=count;
-        if (at-progress>=64*1024*1024) { bm_putc('.'); progress=at; }
+    bm_puts("Loading model parts from USB");
+#ifndef BM_MODEL_PART_BYTES
+#define BM_MODEL_PART_BYTES (UINT64_C(2)*1024*1024*1024)
+#endif
+    size_t at=0,progress=0;
+    for (unsigned part=0;at<bytes;part++) {
+        if (part>=1000) bm_panic("too many model parts");
+        CHAR16 name[]=L"\\model.000";
+        name[7]=(CHAR16)('0'+part/100); name[8]=(CHAR16)('0'+part/10%10);
+        name[9]=(CHAR16)('0'+part%10);
+        if (EFI_ERROR(root->Open(root,&file,name,EFI_FILE_MODE_READ,0)))
+            bm_panic("model part missing; copy dist/model.000 to USB");
+        size_t part_bytes=bytes-at>BM_MODEL_PART_BYTES ? BM_MODEL_PART_BYTES : bytes-at;
+        union { EFI_FILE_INFO info; unsigned char bytes[512]; } info_buffer;
+        UINTN info_size=sizeof(info_buffer);
+        EFI_FILE_INFO *info=&info_buffer.info;
+        if (EFI_ERROR(file->GetInfo(file,&info_guid,&info_size,info)) ||
+            info_size<SIZE_OF_EFI_FILE_INFO || (info->Attribute&EFI_FILE_DIRECTORY) ||
+            info->FileSize!=part_bytes)
+            bm_panic("wrong model part size; copy the Qwen model built with this EFI");
+        size_t end=at+part_bytes;
+        while (at<end) {
+            UINTN chunk=end-at>1024*1024 ? 1024*1024 : end-at;
+            UINTN count=chunk;
+            if (EFI_ERROR(file->Read(file,&count,data+at)) || !count || count>chunk)
+                bm_panic("cannot read model part; check the USB stick");
+            at+=count;
+            if (at-progress>=64*1024*1024) { bm_putc('.'); progress=at; }
+        }
+        if (EFI_ERROR(file->Close(file))) bm_panic("cannot close model file");
     }
-    EFI_STATUS file_status=file->Close(file);
-    EFI_STATUS root_status=root->Close(root);
-    if (EFI_ERROR(file_status) || EFI_ERROR(root_status)) bm_panic("cannot close model file");
+    if (EFI_ERROR(root->Close(root))) bm_panic("cannot close model file");
     bm_puts(" OK\n");
     return data;
 }

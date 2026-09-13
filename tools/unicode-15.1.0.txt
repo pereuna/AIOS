@@ -1,4 +1,4 @@
-# Unicode 15.1.0 categories for the SMOLQ4 tokenizer.
+# Unicode 15.1.0 categories for the QWENQ4 tokenizer.
 # Generated with the original export_model.py using CPython 3.13 unicodedata
 # (Unicode 15.1.0 General_Category L*/N*) and its explicit White_Space list.
 # Verified byte-for-byte against the pinned model.bin Unicode table.

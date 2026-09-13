@@ -5,6 +5,9 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tools.split_model import split_model
 
 
 def main():
@@ -27,13 +30,14 @@ def main():
         drive = f"format=raw,file=fat:rw:{esp}"
         if args.model:
             # QEMU's directory-backed FAT is only ~516 MB. Use a private FAT32
-            # image for the 919 MiB model; no mount or root privileges needed.
+            # image and split weights; no mount or root privileges needed.
             disk = Path(directory) / "esp.img"
             with disk.open("wb") as image:
-                image.truncate(2 * 1024**3)
+                image.truncate(max(2, (args.model.stat().st_size + 1024**3 - 1) // 1024**3 + 1) * 1024**3)
             subprocess.run(["mformat", "-i", str(disk), "-F", "::"], check=True)
             subprocess.run(["mcopy", "-i", str(disk), "-s", str(esp / "EFI"), "::/"], check=True)
-            subprocess.run(["mcopy", "-i", str(disk), str(args.model), "::/model.bin"], check=True)
+            for part in split_model(args.model, Path(directory) / "parts"):
+                subprocess.run(["mcopy", "-i", str(disk), str(part), "::/"], check=True)
             drive = f"format=raw,snapshot=on,file={disk}"
         variables = Path(directory) / "vars.fd"
         shutil.copyfile(Path(args.firmware).with_name("OVMF_VARS_4M.fd"), variables)

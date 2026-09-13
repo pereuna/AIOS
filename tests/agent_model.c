@@ -5,7 +5,7 @@
 #include "../baremetal/runtime.h"
 enum { MAXCTX=8192 };
 typedef struct { const unsigned char *p; unsigned n; } Word;
-typedef struct { unsigned nspecial, byte_id[256]; Word words[32]; } Model;
+typedef struct { unsigned byte_id[256]; Word words[32]; } Model;
 typedef struct { int pos,ctx; float logits[1]; } State;
 static int next[8192], cursor, parallel, fed;
 static char feedback_text[512];
@@ -24,13 +24,13 @@ static int tokenize(Model *m, const char *text, int *ids, int cap, int special) 
 }
 #include "../baremetal/agent_model.h"
 int main(void) {
-    Model m={.nspecial=17}; State s={.ctx=2048}; int ids[MAXCTX];
+    Model m={0}; State s={.ctx=2048}; int ids[MAXCTX];
     m.byte_id['\n']=17;
     m.words[17]=(Word){(const unsigned char *)"/a",2};
     m.words[18]=(Word){(const unsigned char *)"sm ",3};
     m.words[19]=(Word){(const unsigned char *)"li r0 42; exit r0; end",sizeof("li r0 42; exit r0; end")-1};
     agent_model a={&m,&s,ids}; agent_reply r={0};
-    next[0]=17; next[1]=18; next[2]=19; next[3]=2;
+    next[0]=17; next[1]=18; next[2]=19; next[3]=MODEL_EOS;
     agent_model_generate(&a,64,AGENT_CONTEXT_RESERVE,&r);
     assert(r.stop==AGENT_END && !strcmp(r.text,"/asm li r0 42; exit r0; end"));
     assert(r.tokens==4 && s.pos==5 && !parallel);
@@ -55,8 +55,14 @@ int main(void) {
     s.pos=s.ctx-AGENT_CONTEXT_RESERVE; cursor=0; r=(agent_reply){0};
     agent_model_generate(&a,64,AGENT_CONTEXT_RESERVE,&r);
     assert(r.stop==AGENT_CONTEXT_LIMIT && !r.tokens && cursor==0);
-    s.pos=0; cursor=0; next[0]=1; r=(agent_reply){0};
+    s.pos=0; cursor=0; next[0]=151644; r=(agent_reply){0};
     agent_model_generate(&a,64,2,&r); assert(r.stop==AGENT_INVALID_TOKEN);
+    s.pos=0; cursor=0; next[0]=MODEL_BOS; r=(agent_reply){0};
+    agent_model_generate(&a,64,2,&r); assert(r.stop==AGENT_END);
+    s.pos=0; cursor=0; next[0]=MODEL_TOKEN_END; r=(agent_reply){0};
+    agent_model_generate(&a,64,2,&r); assert(r.stop==AGENT_INVALID_TOKEN);
+    assert(model_token_text(0) && model_token_text(1) && model_token_text(2));
+    assert(model_token_text(MODEL_SPECIAL_END) && !model_token_text(-1));
     static unsigned char huge[ASM1_MAX_SOURCE]; memset(huge,'x',sizeof(huge));
     m.words[20]=(Word){huge,sizeof(huge)};
     s.pos=0; cursor=0; next[0]=20; r=(agent_reply){0};

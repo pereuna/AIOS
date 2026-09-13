@@ -1,16 +1,16 @@
-# SmolLM2 suoraan UEFI-tikulta
+# Qwen2.5-Coder suoraan UEFI-tikulta
 
 Tässä projektissa on yksi ajettava versio: itsenäinen x86-64 UEFI-ohjelma.
-USB-tikulla on pieni `EFI/BOOT/BOOTX64.EFI` ja erillinen `model.bin` tikun
-juuressa. Ohjelma lataa nelibittisen SmolLM2-1.7B-Instruct-mallin UEFI:n
+USB-tikulla on pieni `EFI/BOOT/BOOTX64.EFI` ja mallitiedosto `model.000` tikun
+juuressa. Ohjelma lataa nelibittisen Qwen2.5-Coder-1.5B-Instruct-mallin UEFI:n
 tiedostopalveluilla RAMiin. Sen jälkeen levyä ei enää käytetä. Ajettava
 toteutus on C:tä ja hieman assembleria: ei Linuxia, C++:aa eikä llama.cpp:tä.
 
 ## Kääntäminen
 
-`model.bin` on 964 120 960 tavun (noin 919,46 MiB) SMOLQ4-malli. Sitä ei tallenneta Git-
+`model.bin` on 872 253 632 tavun (noin 831,85 MiB) QWENQ4-malli. Sitä ei tallenneta Git-
 historiaan. `make` lataa puuttuvat, tiettyyn revisioon lukitut lähdepainot
-[Hugging Facesta](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct),
+[Hugging Facesta](https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct),
 tarkistaa niiden SHA-256-tiivisteet, kvantisoi `model.bin`-tiedoston paikallisesti
 ja kääntää UEFI-tiedoston:
 
@@ -22,14 +22,15 @@ Tulos on:
 
 ```text
 dist/EFI/BOOT/BOOTX64.EFI
-dist/model.bin
+dist/model.000
 ```
 
-Pelkän mallin voi rakentaa komennolla `make model`. Alkuperäinen noin 3,42 Gt:n
-Safetensors-tiedosto jää ignoroituun `.model-source/SmolLM2-1.7B-Instruct`-
+Pelkän mallin voi rakentaa komennolla `make model`. Alkuperäinen noin 3,09 Gt:n
+BF16-painotiedosto jää ignoroituun
+`.model-source/Qwen2.5-Coder-1.5B-Instruct`-
 välimuistiin, joten sitä ei tarvitse ladata jokaisella käännöskerralla.
-Varaa kehityskoneelle noin 7 Gt vapaata levytilaa latausta, muunnosta ja
-kopioita varten. Vanhan 135M-version `model.bin` korvataan automaattisesti.
+Varaa kehityskoneelle noin 6 Gt vapaata levytilaa latausta, muunnosta ja
+kopioita varten. Vanhan malliversion `model.bin` korvataan automaattisesti.
 
 GNU/Linuxissa tarvitaan GCC, binutils, GNU Make, tar, curl, Python 3 ja NumPy.
 Järjestelmän Python ja NumPy riittävät; venv-ympäristöä tai pip-asennuksia ei
@@ -53,13 +54,15 @@ Kontekstin ja vastauksen oletuspituuden voi asettaa käännösvaiheessa:
 make CONTEXT=2048 TOKENS=512
 ```
 
-Nämä ovat myös oletukset. `TOKENS` on yhden käyttäjäkysymyksen kaikkien
-mallivastausten yhteinen budjetti, mukaan lukien ASM-kutsut ja korjausyritykset.
+Nämä ovat myös oletukset. `TOKENS` on yhden vastauksen tokenbudjetti,
+mukaan lukien mallin tulostama päättely.
 
 `make clean` poistaa vain `.build`- ja `dist`-hakemistot.
 `make test` tarkistaa muunnoksen, pinnatun Unicode-taulukon, EFI-kuvan otsakkeen,
 UEFI-tiedostonluvun simuloiduilla firmware-palveluilla ja C-inferenssin
-NumPy-vertailua vasten kehityskoneella.
+NumPy-vertailua vasten kehityskoneella. `make test-model-uefi` tarkistaa
+mallitiedoston latauksen, CRC32:n ja neljän tokenin päättelyn
+QEMU/OVMF:ssä (KVM, 2 GiB VM-muistia).
 
 ## USB-tikku
 
@@ -72,29 +75,31 @@ tools/make_usb.sh /dev/sda
 Komento käyttää olemassa olevaa `/dev/sda1`-osiota. Jos tikku pitää alustaa,
 käytä erikseen tuhoavaa komentoa `sudo tools/make_usb.sh --format --yes /dev/sda`.
 Työkalu vaatii irrotettavan levyn (`lsblk RM=1`), irrottaa sen lopuksi ja vertaa
-ennen jokaista kopiointia kokoa sekä SHA-256-tiivistettä. Samanlainen `model.bin`
+ennen jokaista kopiointia kokoa sekä SHA-256-tiivistettä. Samanlaiset mallitiedoston osat
 ohitetaan kokonaan.
 
-Kopioi sekä `dist/EFI` että `dist/model.bin` FAT32-tikun juureen. Lopputulos:
+Kopioi `dist/EFI` ja `dist/model.000` FAT32-tikun juureen.
+Qwenin Q4-painot mahtuvat yhteen FAT32-yhteensopivaan tiedostoon. Lopputulos:
 
 ```text
 EFI/BOOT/BOOTX64.EFI
-model.bin
+model.000
 ```
 
 Käynnistä x86-64-kone UEFI-tilassa. Secure Boot pitää poistaa käytöstä, koska
-tiedostoa ei ole allekirjoitettu. Suositus on vähintään 4 GiB RAMia.
+tiedostoa ei ole allekirjoitettu. Suositus on vähintään 2 GiB RAMia ja 2 Gt:n USB-tikku.
 Oletuskonteksti on 2 048 tokenia: mallipainot ja FP32-KV-välimuisti vievät
-yhteensä noin 1,65 GiB, minkä lisäksi tarvitaan ohjelman ja firmwaren muistia.
-1 024 tokenilla vastaava määrä on noin 1,27 GiB, mutta työkalukierroksille jää
-vähemmän tilaa. Täysi 8 192 tokenin konteksti
-ei käytännössä mahdu 4 GiB:n koneeseen. Matriisi-vektorilaskenta käyttää
+yhteensä noin 944 MiB, minkä lisäksi tarvitaan ohjelman ja firmwaren muistia.
+1 024 tokenilla vastaava määrä on noin 888 MiB ja 8 192 tokenilla noin 1,25 GiB.
+Lähdemalli tukee 32 768 tokenia, mutta tämän UEFI-toteutuksen konteksti on
+rajattu 8 192 tokeniin. Matriisi-vektorilaskenta käyttää
 automaattisesti AVX2:ta, kun suorittavan ytimen CPUID ja XCR0 sallivat sen;
 muuten käytetään SSE2:ta. UEFI MP Services -rajapinnalla laskenta käyttää
 enintään neljää loogista prosessoria.
 Puuttuvalla MP-tuella laskenta toimii yhdellä prosessorilla. Oletus on neljä
 workeria; komennolla `/threads 1` voi mitata yhden prosessorin vertailutuloksen.
-1.7B on selvästi nykyistä edeltänyttä 135M-mallia raskaampi.
+Qwenin Q4-painot vievät noin 81 % vähemmän tilaa kuin aiemman Seed-Coder-8B:n
+painot. Myös KV-välimuisti on selvästi pienempi.
 
 Ohjelma käyttää UEFI:n tiedosto-, näyttö-, näppäimistö-, ajastin-, muistivaraus- ja
 sammutustoimintoja. `ExitBootServices()`-kutsua ei tehdä, jotta firmwaren USB-
@@ -105,7 +110,7 @@ Käynnistyksessä pitää näkyä:
 ```text
 UEFI USB -> RAM -> neural.c
 Math: SSE2; startup check OK (2026-09-10).
-Loading model.bin from USB.............. OK
+Loading model parts from USB.............. OK
 Checking model CRC32... OK
 YOU>
 ```
@@ -141,13 +146,16 @@ komennolla `/asm SOURCE` (rivinvaihdot voi korvata puolipisteillä). Se käänt�
 rajatun kokonaislukukielen suoraan ring3-prosessiksi; kieli ja rajat ovat
 [docs/asm1.md](docs/asm1.md).
 
-Mallille annetaan ASM-kielen järjestelmäohje ja esimerkkikeskustelu
-työkalukutsuista sekä virheen korjaamisesta. Kun mallin valmis vastaus on `/asm ...; end`, AIOS
-kääntää ja suorittaa ohjelman automaattisesti, palauttaa tuloksen mallin
-kontekstiin ja jatkaa vastausta ilman käyttäjän toimia. Malli voi myös korjata
-virheellisen ohjelman. Yhtä kysymystä kohti sallitaan enintään kolme kutsua;
-katkennutta kutsua ei suoriteta. `asm1:` näyttää välituloksen, `AI>` mallin
-vastauksen. Tämä ohjeistaa nykyistä mallia, eikä muuta mallipainoja.
+Mallin järjestelmäviesti opettaa asm1-kielen syntaksin ja käyttää sitä
+oletuksena assembly-/assembler-esimerkeissä. Muu murre, kuten Linux/GAS,
+valitaan vain käyttäjän erillisestä pyynnöstä. Esimerkiksi `Write a simple
+assembler example that adds 17 and 25.` pyytää ruudulle yhden
+`/asm asm1; ...; exit rN; end` -rivin, jonka voi syöttää konsoliin kokeiltavaksi.
+Tavallisiin kysymyksiin vastataan normaalisti. Vastaus tulostuu token
+kerrallaan yhdellä generointikierroksella. `/asm SOURCE` suoritetaan vain
+käyttäjän antamana konsolikomentona; mallin vastauksessa esiintyvä `/asm` on tavallista tekstiä.
+Komennon tulosta ei lisätä mallin keskusteluun. `asm1:` näyttää komennon
+tuloksen ja `AI>` mallin vastauksen.
 
 Prosessi saa 4 KiB muuttumattoman koodisivun ja 8 KiB NX-pinon suojaussivuineen.
 Kernelin muisti ei ole käyttäjätilan käytettävissä. Trap Flag rajoittaa ajon
@@ -177,7 +185,11 @@ Mallin tiedostomuoto on kuvattu [docs/format.md](docs/format.md), testauksen
 tulokset [docs/verification.md](docs/verification.md) ja projektin synnyttäneet
 keskustelut [docs/keskustelut.md](docs/keskustelut.md).
 
-SmolLM2 soveltuu ensisijaisesti englanninkieliseen kokeiluun. Myös 1.7B-malli
-voi toistaa itseään ja antaa vääriä vastauksia. Mallin lähde, revisio,
-kvantisointi ja tiiviste ovat tiedostossa `model.json`; lisenssi on
-`LICENSE.SmolLM2`.
+Lähdemalli on `Qwen/Qwen2.5-Coder-1.5B-Instruct`. AIOS kvantisoi sen BF16-
+painot Q4-muotoon. RMSNorm-painot ja Q/K/V-projektioiden bias-vektorit ovat
+FP32-muodossa. Tokenisointi käyttää NFC-normalisointia ja mallin omaa BPE-
+sanastoa. Keskustelumuoto on ChatML (`<|im_start|>system`, `user`, `assistant`
+ja `<|im_end|>`); AIOS-ohje annetaan system-viestinä ensimmäisellä vuorolla.
+Lähde, revisio, kvantisointi ja tiiviste ovat tiedostossa `model.json`;
+lisenssi on `LICENSE.Qwen` (Apache-2.0). Vanhojen mallien lisenssit säilyvät
+historiaa varten.

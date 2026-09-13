@@ -19,7 +19,8 @@ int main(int argc, char **argv) {
     if (argc==2 && !strcmp(argv[1],"--simd")) {
         puts(bm_cpu_avx2_available() ? "AVX2" : "SSE2"); return 0;
     }
-    if (argc<2 || argc>3) return 2;
+    if (argc<2 || argc>4) return 2;
+    if (argc==4 && strcmp(argv[2],"--tokenize") && strcmp(argv[2],"--turn") && strcmp(argv[2],"--next-turn")) return 2;
     const char *simd=getenv("SMOL_SIMD");
     if (simd && strcmp(simd,"auto") && strcmp(simd,"sse2") && strcmp(simd,"avx2")) return 2;
     /* 'avx2' requires actual AVX2 execution; it never bypasses CPU checks. */
@@ -37,6 +38,14 @@ int main(int argc, char **argv) {
     void *data=mmap(NULL,(size_t)st.st_size,PROT_READ,MAP_PRIVATE,fd,0);
     if (data==MAP_FAILED) bm_panic("cannot map model");
     Model *m=alloc(sizeof(*m)); init_model(m,data,(size_t)st.st_size);
+    if (argc==4 && (!strcmp(argv[2],"--tokenize") || !strcmp(argv[2],"--turn") || !strcmp(argv[2],"--next-turn"))) {
+        int *ids=alloc(MAXCTX*sizeof(int));
+        int n=strcmp(argv[2],"--tokenize") ? turn_tokens(m,argv[3],!strcmp(argv[2],"--turn"),ids,MAXCTX)
+            : tokenize(m,argv[3],ids,MAXCTX,1);
+        for (int i=0;i<n;i++) printf("%s%d",i ? " " : "",ids[i]);
+        putchar('\n'); free(ids); free(m);
+        munmap(data,(size_t)st.st_size); close(fd); return 0;
+    }
     if (argc==3) {
         State *s=new_state(m,2048);
         int ids[MAXCTX], n=turn_tokens(m,argv[2],1,ids,MAXCTX);
@@ -46,14 +55,14 @@ int main(int argc, char **argv) {
         for (int i=0;i<n;i++) forward(m,s,ids[i],i==n-1);
         for (int i=0;i<256;i++) {
             int token=greedy(s->logits);
-            if (token==0 || token==2) break;
-            if ((unsigned)token>=m->nspecial) fwrite(m->words[token].p,1,m->words[token].n,stdout);
+            if (model_token_end(token)) break;
+            if (model_token_text(token)) fwrite(m->words[token].p,1,m->words[token].n,stdout);
             forward(m,s,token,1);
         }
         bm_parallel_end();
         putchar('\n'); free_state(s);
     } else {
-        const int tokens[]={1,9690,198,19556};
+        const int tokens[]={151644,872,198,3838};
         State *s=new_state(m,8);
         bm_parallel_begin();
         for (unsigned i=0;i<sizeof(tokens)/sizeof(*tokens);i++) {

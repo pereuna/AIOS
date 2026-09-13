@@ -1,5 +1,134 @@
 # UEFI-version tarkistus
 
+## Qwen2.5-Coder-1.5B-Instruct (13.9.2026)
+
+Seed-Coder-8B korvattiin mallilla `Qwen/Qwen2.5-Coder-1.5B-Instruct`,
+revisio `2e1fd397ee46e1388853d2af2c993145b0f1098a`. BF16-lähdepainojen
+SHA-256 tarkistettiin ennen muunnosta. Q4-malli on 872 253 632 tavua
+(noin 831,85 MiB), SHA-256
+`6f8e43973023109fe0396273c475eeb19058fbb986d816c650ed4a290f05f96e`.
+Painot ja 2 048 tokenin FP32-KV-välimuisti vievät yhteensä noin 944 MiB.
+
+Toteutus käyttää Qwenin 28 kerrosta, 12 Q-päätä ja kahta KV-päätä sekä
+jaettuja embedding-/ulostulopainoja. Q/K/V-bias-vektorit säilytetään FP32-
+muodossa ja lisätään ennen RoPEa. ChatML-viestit käyttävät Qwenin oikeita
+aloitus- ja lopetustokeneita; pienet token-ID:t 0, 1 ja 2 ovat tavallista
+tekstiä. NFC, lisätyt koodi-/työkalutokenit ja rivinvaihtojen käsittely
+vastaavat alkuperäistä tokenisointia.
+
+`make test` läpäisi: viisi Python-testiä (45 tokenisoinnin ja keskustelumuodon
+vertailutapausta), tiedostonlataajan 15 tapausta, MP/SIMD-, komentotulkki-
+ja agenttisovittimen testit sekä riippumaton NumPy-päättely. Suoraan
+Hugging Facen `tokenizers`-toteutukseen verrattiin yhteensä 205 tekstitapausta;
+kaikki vastasivat. C:n 607 744 logitin suurin absoluuttinen ero NumPyyn oli
+0,00019741. SSE2/AVX2, eri ydinmäärät ja dispatch-tilat tuottivat keskenään
+bittitasolla samat tulokset.
+
+`make test-model-uefi` läpäisi QEMU/OVMF:ssä KVM:llä, neljällä vCPU:lla ja
+2 GiB:n muistilla. Mallin lataus ja CRC32 onnistuivat. Syötteen
+`[151644, 872, 198, 3838]` greedy-tulokset olivat sekä kehityskoneella että
+UEFI:ssä `[17, 40, 198, 358]`.
+
+Todellinen keskustelukoe käytti AIOSin system-ohjetta ja kysymystä
+`What is 2+2? Reply with only the number.` Malli vastasi `4` ja päätti vuoron.
+Syötteessä oli 427 tokenia; koko koe kesti tällä kehityskoneella 149,75 sekuntia
+neljällä workerilla ja AVX2-laskennalla.
+
+USB-jakelu sisältää `dist/EFI/BOOT/BOOTX64.EFI` ja yhden `dist/model.000`-
+tiedoston. Vanhan jakelun `model.001` ja `model.002` poistettiin paikallisesta
+`dist`-hakemistosta. `dist/model.000`-tiedoston SHA-256 tarkistettiin mallin
+tiivistettä vasten. EFI-kuvan SHA-256 on
+`91e7c5b32f33c8c86dbdbbd4c42463eddd35e012590c70f1364cf774ea9d99c6`.
+Fyysiselle USB-tikulle ei tehty asennusta tämän vaihdon yhteydessä.
+
+Alla olevat Seed-Coder- ja SmolLM2-mittaukset ovat aiempien malliversioiden
+historiaa.
+
+## Seed-Coder-8B-Reasoning-bf16 (13.9.2026)
+
+Oletusmalli vaihdettiin lähteeseen `ByteDance-Seed/Seed-Coder-8B-Reasoning-bf16`,
+revisio `aa14634327ec15c9b9130243104cb2df400f1a60`. Kaikkien neljän BF16-
+painotiedoston SHA-256 tarkistettiin. AIOS käyttää niistä muodostettua Q4-
+mallia: 4 645 267 520 tavua, SHA-256
+`24f895d8e4acf559caf642ae6b44a4a3e673f4fc76ab417fdf0291b9cc07174a`.
+
+`make test` läpäisi: viisi Python-testiä (mukaan lukien 35 upstream-
+tokenisoinnin vertailutapausta), lataajan 15 tapausta, MP/SIMD-, komentotulkki-
+ja agenttisovittimen testit sekä riippumaton NumPy-päättely. Kaikki 620 544
+logitia vastasivat NumPy-vertailua; suurin absoluuttinen ero oli 0,00007343.
+SSE2/AVX2-, ydinmäärä- ja dispatch-vaihtoehdot tuottivat keskenään bittitasolla
+samat logitit. Syötteen `[0, 4169, 326, 3857]` greedy-tulokset olivat
+`[326, 326, 130, 684]`.
+
+Lisäksi 162 tekstitapausta verrattiin suoraan Hugging Facen `tokenizers`-
+toteutukseen. Vertailussa olivat muun muassa koodi, rivinvaihdot, isot kirjaimet,
+luvut, Unicode ja NFC-normalisointi. AIOS-ohjeen sisältävä ensimmäinen
+käyttäjävuoro vastasi myös alkuperäisen keskustelumallin tokenisointia.
+
+USB-jakelu on `dist/EFI/BOOT/BOOTX64.EFI` sekä `dist/model.000`–`model.002`.
+Osien yhdistetty SHA-256 tarkistettiin mallin tiivistettä vasten. EFI-kuvan SHA-256
+on `3dfe377e5754c91d026d4019fbccd69a5be6cc9a81e0270d486de89fb7b32196`.
+`tests/model_uefi.c` ajettiin QEMU/OVMF:ssä KVM:llä, neljällä vCPU:lla ja
+8 GiB:n muistilla: kolmen FAT32-osan lataus, CRC32 ja neljän tokenin päättely
+läpäisivät, ja greedy-tulokset olivat samat kuin kehityskoneella.
+Testin voi toistaa komennolla `make test-model-uefi`.
+
+Fyysiselle USB-tikulle ei tehty tämän vaihdon yhteydessä asennusta eikä
+uudelle mallille ajettu fyysisen koneen käynnistystestiä. Alla olevat vanhemmat
+mittaukset ja keskustelukokeet koskevat aiempia SmolLM2-versioita.
+
+## Asm1-koodiesimerkit tavallisessa keskustelussa (13.9.2026)
+
+Tavalliseen järjestelmäviestiin lisättiin `asm1_prompt.h`-tiedoston
+`ASM1_SYSTEM_PROMPT`: kielikuvaus, käskyt ja yksi yhteenlaskuesimerkki.
+Assembly-esimerkkien oletus on asm1. Malli näyttää käsin ajettavan
+`/asm ...` -rivin; automaattinen suoritus ja työkalupalautekierros pysyvät
+poissa normaalista EFI-ohjelmasta. Automaatiotestin vanha ohje on erillinen
+`ASM1_AGENT_SYSTEM_PROMPT`.
+
+`make test` läpäisi. Todellinen Q4-malli sai pyynnön `Write a simple assembler
+example that adds 17 and 25.` ja tuotti selityksen yhteydessä rivin:
+
+```text
+/asm asm1; li r0 17; li r1 25; add r0 r1; exit r0; end
+```
+
+Rivi läpäisi varsinaisen asm1-kääntäjän: 21 tavua konekoodia ja kelvollinen
+`end`-direktiivi. Tämä mallikoe tarkisti tuotetun koodin kääntymisen;
+generoitua ohjelmaa ei ajettu automaattisesti. Yksi onnistunut esimerkki ei
+takaa kaikkien mallin tuottamien ohjelmien oikeellisuutta.
+
+Koepyynnön koko syöte oli 469 tokenia. Kysymyksellä `What is 17+25?` syöte
+on nyt 462 tokenia, kun pelkällä esittelyviestillä se oli 33 ja vanhalla
+automaatiolla 671. Todellisella tokenizerilla tarkistettiin kieliohjeen
+mukanaolo ensimmäisessä vuorossa ja nollauksen jälkeen sekä ohjeeton
+jatkovuoron kehystys. Kieliohje kasvattaa ensimmäisen vuoron laskentatyötä;
+fyysisen koneen vastenopeutta ei mitattu.
+
+EFI-kuva sisältää uuden kieliohjeen ja `/asm`-konsolikomennon, mutta ei
+`agent_run()`-symbolia tai automaation työkalupalauteohjetta. Kuvan SHA-256:
+`91cee3bbec3f1ec301b9271ffc7993fb45aea47381bc4adf506bd19c307280e7`.
+
+## Tavallinen keskustelu ilman autonomista asm1:tä (12.9.2026)
+
+Normaalista järjestelmäviestistä poistettiin asm1-ohje ja esimerkkivuorot.
+EFI-konsoli generoi yhden vastauksen token kerrallaan ilman automaattista
+työkalukierrosta tai sen kontekstivarausta. Käyttäjän `/asm SOURCE` säilyy
+erillisenä konsolikomentona. Kokeellinen agentti on vain erillisissä testikuvissa.
+
+`make test` ja `make test-process` läpäisivät; jälkimmäinen tarkisti asm1:n,
+ring3-ajot ja konsolin QEMU/OVMF:ssä yhdellä ja neljällä virtuaaliytimellä.
+Kysymyksen `What is 17+25?` ensimmäinen syöte lyheni todellisella tokenizerilla
+671 tokenista 33 tokeniin. Jatkovuoron kehystys ja nollauksen jälkeinen
+alkuperäisen lyhyen syötteen palautuminen tarkistettiin myös. Oikean Q4-mallin
+host-kokeen vastaus oli `17 + 25 = 42.`.
+
+Normaalin EFI-kuvan symbolitaulussa ei ole `agent_run()`-funktiota, eikä kuva
+sisällä asm1:n järjestelmäohjetta tai työkalupalautteen ohjeita. Erillinen
+`agent-live.efi` rakentui; sen hidasta malliajoa ei toistettu tässä muutoksessa.
+Fyysisen koneen vastenopeutta ei mitattu. Uuden `BOOTX64.EFI`-kuvan SHA-256 on
+`5e7bd9bea0b6549f9ad1e6195a8e84ad1fa035b0a62cc26db0269283fbd7c19a`.
+
 ## ASM-kääntäjä ja automaattinen työkalukierros (12.9.2026)
 
 Kääntäjän virtuaalirekisterit erotettiin pinosta ja apurekistereistä. Korjaukset

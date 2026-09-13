@@ -8,58 +8,49 @@ ring3-prosessissa. Konsolissa lähderivit kirjoitetaan puolipisteillä:
 /asm asm1; input 12 30; ld r0 0; ld r1 1; add r0 r1; exit r0; end
 ```
 
-Tämä palauttaa `42`. Mallin tuottama kutsu suoritetaan vain, jos vastauksen
-ensimmäiset tavut ovat täsmälleen `/asm `, lähde päättyy erilliseen `end`-
-direktiiviin ja malli päättää vastauksensa lopputokenilla. Kutsu käännetään
-ja ajetaan automaattisesti. Tulos palautetaan mallille, joka jatkaa vastausta
-tai korjaa ohjelmaa ilman käyttäjän toimia.
+Tämä palauttaa `42`. Komento suoritetaan vain käyttäjän syöttämänä
+konsolikomentona. Mallin vastauksessa oleva `/asm` näytetään tekstinä, eikä
+komennon tulosta syötetä mallin kontekstiin.
 
-## Mallin automaattinen työkalukierros
+Tavallisen keskustelun järjestelmäviesti sisältää asm1-kielen ohjeen
+(`ASM1_SYSTEM_PROMPT` tiedostossa `baremetal/asm1_prompt.h`). Assembler- ja
+assembly-esimerkeissä käytetään oletuksena asm1:tä, ellei käyttäjä pyydä
+nimenomaisesti muuta murretta. Mallia ohjeistetaan näyttämään kokonainen,
+puolipistein erotettu `/asm asm1; ...; exit rN; end` -rivi. Esimerkiksi
+`Write a simple assembler example that adds 17 and 25.` pyytää testattavaa
+koodia. Kieli käsittelee kokonaislukuja; siinä ei ole tekstin tulostusta,
+merkkijonoja tai Linux-järjestelmäkutsuja.
 
-Mallille annetaan kieliohje ja esimerkkikeskustelu (`baremetal/asm1_prompt.h`).
-Järjestelmäviesti sisältää käskyt ja rajat. Onnistunut työkalukierros ja virheen
-korjaus annetaan oikeina user/assistant-vuoroina lopputokeneineen, jotta malli
-oppii päättämään kutsun ja odottamaan suoritustulosta. Painoja ei hienosäädetä
-eikä ohjetiedostoja lueta tikulta keskustelun aikana.
-Ohje ja esimerkit lasketaan kontekstiin ensimmäisellä kysymyksellä ja uudelleen
-`/reset`-komennon tai kontekstin tyhjennyksen jälkeen. Tämä lisää erityisesti
-ensimmäisen vastauksen odotusaikaa.
+Ohje sisältää syntaksin, käskyt ja yhden yhteenlaskuesimerkin. Tavallisiin
+kysymyksiin mallia ohjeistetaan vastaamaan normaalisti. Automaattista suoritusta, työkalupalautetta
+tai korjauskierroksia ei käytetä. Sama kieliohje otetaan käyttöön myös
+`/reset`-komennon ja kontekstin tyhjennyksen jälkeen. Kieliohje pidentää
+ensimmäisen kysymyksen käsittelyä verrattuna pelkkään avustajan esittelyyn.
+`/tokens N` rajoittaa yhtä vastausta, joka tulostuu token kerrallaan.
 
-`agent_run()` sallii enintään kolme kutsuyritystä kysymystä kohti.
-Käännösvirheet kuluttavat myös yrityksen. Kaikilla mallikierroksilla on
-yhteinen `/tokens N` -budjetti (oletus 512); lopulliselle vastaukselle
-varataan 32 tokenia. Työkalukierroksen generointi jättää kontekstiin
-320 tokenin varan palautteelle ja jatkolle. Jos palautteen jälkeen mahtuu enää
-lopullinen vastaus, seuraavat työkalukutsut estetään. Oletuskonteksti on 2048.
+## Erillinen automaatiotesti
 
-`asm1_execute()` palauttaa käännöstilan, virherivin, tiedon suoritusrajapinnan
-kutsumisesta sekä prosessituloksen. Konsoli ja automaatio käyttävät samaa
-rajapintaa. Luotettu `Tool result (asm1): ...` -palaute lisätään mallin
-käyttämän ChatML-muodon user-viestinä ja sen jälkeen avataan uusi assistant-
-vuoro. Kolmannen kutsun jälkeen mallia ohjeistetaan antamaan lopullinen
-vastaus. Neljättä kutsua ei suoriteta.
-
-Tokeni-, konteksti- tai tavurajaan katkennutta kutsua ei ajeta, vaikka
-puskurissa näkyisi jo `exit` tai `end`. Myöskään virheellisiä ohjaustokeneita
-sisältävää kutsua ei ajeta. Jos budjetti tai konteksti loppuu, AIOS näyttää
-pysäytyksen syyn ja palaa konsoliin. `/exec` ei ole mallin automaattinen työkalu.
-Ohjelman onnistunut suoritus ei yksin todista algoritmin ratkaisevan kysymystä
-oikein; mallin tehtävänymmärrystä pitää arvioida erikseen.
+Automaation kokeellinen toteutus ja testit ovat edelleen lähdekoodissa,
+mutta `agent_run()` ei ole mukana tavallisessa EFI-ohjelmassa.
+`make test-agent-live` rakentaa erillisen testikuvan ja antaa mallille
+nimenomaisesti `baremetal/asm1_prompt.h`-tiedoston `ASM1_AGENT_SYSTEM_PROMPT`-
+ohjeen ja `ASM1_EXAMPLES`-esimerkkivuorot.
+Testissä voidaan kokeilla enintään kolmen kutsun työkalukierrosta ja
+virheenkorjausta. Tämä testitila ei ole tavallisen konsolin toiminto.
 
 ## Lähde ja rajat
 
 Yksi komento kirjoitetaan yhdelle riville, ja käskyt erotetaan rivinvaihdolla
 tai puolipisteellä. `#` aloittaa kommentin rivin tai puolipisteen loppuun asti.
-`asm1`-alkumerkintä on valinnainen. Käsin käytettäessä `end` on valinnainen;
-automaattinen kutsu vaatii sen. `end`-direktiivin jälkeen sallitaan vain
-tyhjää ja kommentteja. Lähteessä pitää olla `exit rN`.
+`asm1`-alkumerkintä ja `end`-direktiivi ovat konsolikomennossa valinnaisia.
+`end`-direktiivin jälkeen sallitaan vain tyhjää ja kommentteja. Lähteessä pitää olla `exit rN`.
 
 Rekisterit ovat `r0`–`r9` ja tunnisteet `l0`–`l31`. Vakiot ovat desimaalisia
 32-bittisiä unsigned-lukuja välillä 0–4294967295; heksalukuja tai negatiivisia
 lukuja ei hyväksytä. Kovat rajat ovat:
 
 - lähde enintään 4095 tavua kääntäjän rajapinnassa; konsolin koko komentorivi
-  ja mallin koko vastaus ovat myös enintään 4095 tavua, joten `/asm ` vie siitä 5;
+  on myös enintään 4095 tavua, joten `/asm ` vie siitä 5;
 - enintään 128 lähdealkiota (käskyt ja `label`-rivit yhteensä);
 - enintään 64 `input`-arvoa;
 - enintään 256 muistisolua;

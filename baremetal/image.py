@@ -24,10 +24,10 @@ def build(args):
     crc = 0
     with args.model.open("rb") as source:
         header = source.read(256)
-        if (size != 964120960 or header[:8] != b"SMOLQ4\0\0" or
+        if (size != 872253632 or header[:8] != b"QWENQ4\0\0" or
                 struct.unpack_from("<11I", header, 8) !=
-                (1, 2048, 8192, 24, 32, 32, 49152, 8192, 32, 1, 2)):
-            raise ValueError("expected a SmolLM2-1.7B SMOLQ4 model")
+                (1, 1536, 8960, 28, 12, 2, 151936, 32768, 32, 151643, 151645)):
+            raise ValueError("expected a Qwen2.5-Coder-1.5B QWENQ4 model")
         source.seek(0)
         while chunk := source.read(1024 * 1024):
             digest.update(chunk)

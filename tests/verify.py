@@ -11,24 +11,25 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-D, H, L, HEADS, HEAD_DIM, VOCAB = 2048, 8192, 24, 32, 64, 49152
-TOKENS = [1, 9690, 198, 19556]
+D, H, L, HEADS, HEAD_DIM, VOCAB = 1536, 8960, 28, 12, 128, 151936
+KV_HEADS, KV_DIM = 2, 256
+TOKENS = [151644, 872, 198, 3838]
 
 
 def verify():
     metadata = json.loads((ROOT / "model.json").read_text())
     raw = np.memmap(ROOT / "model.bin", mode="r", dtype=np.uint8)
-    assert raw.size == metadata["bytes"] == 964120960
+    assert raw.size == metadata["bytes"] == 872253632
     assert struct.unpack_from("<11I", raw, 8) == (
-        1, D, H, L, HEADS, HEADS, VOCAB, 8192, 32, 1, 2)
+        1, D, H, L, HEADS, KV_HEADS, VOCAB, 32768, 32, 151643, 151645)
     epsilon, theta = struct.unpack_from("<2f", raw, 64)
-    assert theta == 130000
+    assert theta == 1000000
     at = metadata["weights_offset"]
 
-    def norm_weights():
+    def norm_weights(width=D):
         nonlocal at
-        values = np.frombuffer(raw, "<f4", D, at)
-        at += D * 4
+        values = np.frombuffer(raw, "<f4", width, at)
+        at += width * 4
         return values
 
     def matrix(rows, columns):
@@ -50,8 +51,10 @@ def verify():
     layers = []
     for _ in range(L):
         layers.append((norm_weights(), norm_weights(),
-                       [matrix(D, D) for _ in range(4)] +
+                       [norm_weights(D), norm_weights(KV_DIM), norm_weights(KV_DIM)],
+                       [matrix(D, D), matrix(KV_DIM, D), matrix(KV_DIM, D), matrix(D, D)] +
                        [matrix(H, D), matrix(H, D), matrix(D, H)]))
+    output_weights = embed
     assert at == raw.size
 
     def norm(x, weights):
@@ -69,12 +72,14 @@ def verify():
 
     x = unpack(embed[TOKENS])
     # All four positions at once, with a causal mask: independent of C's KV loop.
-    for index, (n1, n2, packed) in enumerate(layers):
+    for index, (n1, n2, biases, packed) in enumerate(layers):
         xb = norm(x, n1)
-        q, k, v = [(xb @ unpack(w).T).reshape(-1, HEADS, HEAD_DIM)
-                   for w in packed[:3]]
+        q, k, v = [(xb @ unpack(w).T + bias).reshape(-1, heads, HEAD_DIM)
+                   for w, bias, heads in zip(packed[:3], biases, (HEADS, KV_HEADS, KV_HEADS))]
         q, k = rotate(q), rotate(k)
-        scores = np.einsum("thd,shd->hts", q, k) / np.float32(8)
+        k = np.repeat(k, HEADS // KV_HEADS, axis=1)
+        v = np.repeat(v, HEADS // KV_HEADS, axis=1)
+        scores = np.einsum("thd,shd->hts", q, k) / np.sqrt(np.float32(HEAD_DIM))
         scores[:, np.triu_indices(len(TOKENS), 1)[0],
                np.triu_indices(len(TOKENS), 1)[1]] = -np.inf
         attention = np.exp(scores - scores.max(axis=-1, keepdims=True))
@@ -88,7 +93,10 @@ def verify():
             hidden = gate / (1 + np.exp(-gate)) * up
         x = x + hidden @ unpack(packed[6]).T
         assert np.isfinite(x).all(), index
-    expected = norm(x, final_norm) @ unpack(embed).T
+    # Project in chunks to avoid a multi-GiB decoded vocabulary matrix.
+    final = norm(x, final_norm)
+    expected = np.concatenate([final @ unpack(output_weights[i:i+1024]).T
+                               for i in range(0, VOCAB, 1024)], axis=1)
     command = [str(ROOT / ".build/test-inference"), str(ROOT / "model.bin")]
     capability = subprocess.check_output([command[0], "--simd"], text=True).strip()
     result = subprocess.run(command, check=True, capture_output=True,
