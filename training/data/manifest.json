@@ -1,0 +1,39 @@
+{
+  "compiler": "baremetal/asm1.c",
+  "eval": {
+    "categories": {
+      "arithmetic": 300,
+      "combinations": 75,
+      "conditionals": 100,
+      "factorial": 25,
+      "gcd": 100,
+      "input_memory": 100,
+      "loops": 100,
+      "modulo": 100,
+      "repeated_addition": 100
+    },
+    "examples": 1000,
+    "file": "eval.jsonl",
+    "sha256": "12b56f220cf38531a4f454c2b831c5c53268f40707860630ea86864c45c9d9bf"
+  },
+  "schema_version": 1,
+  "seed": 20260914,
+  "shared_instance_ids": 0,
+  "shared_template_ids": 0,
+  "train": {
+    "categories": {
+      "arithmetic": 6000,
+      "combinations": 1500,
+      "conditionals": 2000,
+      "factorial": 500,
+      "gcd": 2000,
+      "input_memory": 2000,
+      "loops": 2000,
+      "modulo": 2000,
+      "repeated_addition": 2000
+    },
+    "examples": 20000,
+    "file": "train.jsonl",
+    "sha256": "d2c1f3757de694c125c4e88e5385fe45a090ca67c482f670be44e41d28ed76bb"
+  }
+}
