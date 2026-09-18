@@ -4,6 +4,7 @@ PYTHON ?= python3
 CURL ?= curl
 CONTEXT ?= 2048
 TOKENS ?= 512
+.DEFAULT_GOAL := all
 
 MODEL_REV = 2e1fd397ee46e1388853d2af2c993145b0f1098a
 MODEL_BASE_URL ?= https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct/resolve/$(MODEL_REV)
@@ -33,7 +34,61 @@ EFI_CFLAGS = -O3 -std=c11 -Wall -Wextra -Wpedantic -ffreestanding -fno-builtin \
 OBJECTS = .build/main.o .build/platform.o .build/process.o .build/process-arch.o .build/process_console.o .build/asm1.o .build/asm1_tool.o .build/mp.o .build/cpu.o .build/lib.o .build/math.o .build/fp.o
 BOOT = dist/EFI/BOOT/BOOTX64.EFI
 
-.PHONY: all clean model model-check test bench FORCE
+.PHONY: all clean model model-check test bench win FORCE
+
+# Native console has no EFI, model-download, Torch or QEMU dependency.
+CONSOLE_ARGS ?=
+CONSOLE_MODEL ?= $(if $(wildcard .build/console-model.bin),.build/console-model.bin,model.bin)
+HOST_CFLAGS = -O3 -std=c11 -Wall -Wextra -Wpedantic -m64 -mno-avx -msse2 \
+	-mfpmath=sse -mno-80387 -mno-mmx -ffp-contract=off -fno-builtin
+CONSOLE_SOURCES = linux/model.c linux/runtime.c baremetal/math.c baremetal/cpu.c baremetal/fp.S
+CONSOLE_DEPS = neural.c baremetal/runtime.h baremetal/cpu.h baremetal/asm1_prompt.h \
+	baremetal/model_tokens.h baremetal/nfc.h baremetal/nfc_data.h
+
+.PHONY: console console-build console-test console-model
+console-build: .build/aios-model
+
+.build/aios-model: $(CONSOLE_SOURCES) $(CONSOLE_DEPS) Makefile | .build
+	$(CC) $(HOST_CFLAGS) -pthread $(CONSOLE_SOURCES) -o $@
+
+console: console-build
+	$(PYTHON) linux/console.py --model "$(CONSOLE_MODEL)" $(CONSOLE_ARGS)
+
+console-test: console-build .build/test-linux-runtime
+	.build/test-linux-runtime
+	$(PYTHON) -m unittest discover -s tests -p 'test_linux_console.py'
+	$(PYTHON) linux/console.py --asm-only --script linux/examples/smoke.console
+
+.build/test-linux-runtime: tests/linux_runtime.c linux/runtime.c baremetal/fp.S baremetal/runtime.h Makefile | .build
+	$(CC) $(HOST_CFLAGS) -pthread tests/linux_runtime.c linux/runtime.c baremetal/fp.S -o $@
+
+# Convert an existing local checkpoint only; never fetch source files here.
+# Separate output preserves model.bin, including older or custom checkpoints.
+console-model: | .build
+	@set -eu; part=".build/console-model.bin.part"; trap 'rm -f "$$part"' EXIT; \
+	$(PYTHON) tools/export_model.py --config "$(MODEL_SOURCE_DIR)/config.json" \
+		--tokenizer "$(MODEL_SOURCE_DIR)/tokenizer.json" \
+		--weights "$(MODEL_SOURCE_DIR)/model.safetensors" --output "$$part"; \
+	mv "$$part" .build/console-model.bin; trap - EXIT
+
+WIN_DEST ?= /mnt/c/temp
+WIN_TRAINING_FILES = training/*.py training/*.md training/requirements*.txt
+WIN_TOOL_FILES = tools/export_model.py tools/split_model.py tools/unicode-15.1.0.txt
+WIN_ASM1_FILES = baremetal/asm1.c baremetal/asm1.h baremetal/process.h baremetal/runtime.h
+WIN_DATA_FILES = training/data/train.jsonl training/data/eval.jsonl training/data/manifest.json training/data/asm1_foundations.jsonl
+
+win:
+	@set -eu; \
+	test -d "$(WIN_DEST)" || { echo "Windows destination does not exist: $(WIN_DEST)" >&2; exit 1; }; \
+	test -w "$(WIN_DEST)" || { echo "Windows destination is not writable from this WSL: $(WIN_DEST)" >&2; exit 1; }; \
+	mkdir -p "$(WIN_DEST)/training/data" "$(WIN_DEST)/tools" "$(WIN_DEST)/baremetal"; \
+	cp -p $(WIN_TRAINING_FILES) "$(WIN_DEST)/training/"; \
+	cp -p $(WIN_TOOL_FILES) "$(WIN_DEST)/tools/"; \
+	cp -p $(WIN_ASM1_FILES) "$(WIN_DEST)/baremetal/"; \
+	cp -p $(WIN_DATA_FILES) "$(WIN_DEST)/training/data/"; \
+	cp -p training/AIOS_TRAINING_WINDOWS.py "$(WIN_DEST)/AIOS_TRAINING_WINDOWS.py"; \
+	echo "Windows training bundle copied to $(WIN_DEST)"; \
+	printf '%s\n' 'Run in PowerShell: python C:\temp\AIOS_TRAINING_WINDOWS.py check'
 MODEL_PARTS = dist/model.000
 all: $(BOOT) $(MODEL_PARTS)
 

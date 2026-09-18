@@ -10,6 +10,8 @@ from pathlib import Path
 import shutil
 import sys
 
+from model_checks import check_tokenizer_embeddings
+
 
 MODEL_ID = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
 HERE = Path(__file__).resolve().parent
@@ -79,11 +81,11 @@ def main() -> None:
         low_cpu_mem_usage=True,
         device_map=device_map,
     )
-    if base.get_input_embeddings().num_embeddings != original_size:
-        raise SystemExit("base model and tokenizer vocabulary sizes differ")
+    original_embeddings = base.get_input_embeddings().num_embeddings
+    check_tokenizer_embeddings(tokenizer, original_embeddings)
     model = PeftModel.from_pretrained(base, str(adapter), is_trainable=False)
     merged = model.merge_and_unload(progressbar=True, safe_merge=True)
-    if merged.get_input_embeddings().num_embeddings != original_size:
+    if merged.get_input_embeddings().num_embeddings != original_embeddings:
         raise RuntimeError("merging changed the embedding vocabulary size")
     wrong_dtypes = sorted(
         {str(parameter.dtype) for parameter in merged.parameters() if parameter.is_floating_point()}

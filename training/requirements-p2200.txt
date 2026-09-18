@@ -1,0 +1,4 @@
+# Install the CUDA wheel first as described in LAPTOP.md. Keep pip from
+# replacing it with a different Torch release while resolving the other APIs.
+-r requirements.txt
+torch==2.6.0

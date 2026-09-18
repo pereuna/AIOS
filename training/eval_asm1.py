@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from asm1_runtime import ASM1_OK, Asm1Compiler, execute, extract_program, verify_program
+from model_checks import check_tokenizer_embeddings
 
 
 MODEL_ID = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
@@ -46,11 +47,12 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def load_model_and_tokenizer(model_path: str, base_model: str, dtype, device_map: str):
+def load_model_and_tokenizer(model_path: str, base_model: str, dtype, device_map: str, attn_implementation: str | None = None):
     from peft import PeftConfig, PeftModel
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     path = Path(model_path)
+    attention = {"attn_implementation": attn_implementation} if attn_implementation else {}
     if device_map == "cpu":
         device_map = {"": "cpu"}
     is_adapter = path.is_dir() and (path / "adapter_config.json").is_file()
@@ -59,18 +61,17 @@ def load_model_and_tokenizer(model_path: str, base_model: str, dtype, device_map
         adapter_base = base_model or config.base_model_name_or_path or MODEL_ID
         tokenizer = AutoTokenizer.from_pretrained(adapter_base, use_fast=True)
         base = AutoModelForCausalLM.from_pretrained(
-            adapter_base, dtype=dtype, device_map=device_map, low_cpu_mem_usage=True
+            adapter_base, dtype=dtype, device_map=device_map, low_cpu_mem_usage=True, **attention
         )
         model = PeftModel.from_pretrained(base, model_path, is_trainable=False)
     else:
         tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
         model = AutoModelForCausalLM.from_pretrained(
-            model_path, dtype=dtype, device_map=device_map, low_cpu_mem_usage=True
+            model_path, dtype=dtype, device_map=device_map, low_cpu_mem_usage=True, **attention
         )
     if tokenizer.pad_token_id is None:
         raise RuntimeError(f"tokenizer for {model_path} has no pad token; refusing to add one")
-    if model.get_input_embeddings().num_embeddings != len(tokenizer):
-        raise RuntimeError(f"model/tokenizer vocabulary mismatch for {model_path}")
+    check_tokenizer_embeddings(tokenizer, model.get_input_embeddings().num_embeddings)
     tokenizer.padding_side = "left"
     model.eval()
     return model, tokenizer
@@ -104,11 +105,12 @@ def evaluate_model(
     max_new_tokens: int,
     system_prompt: str,
     expected_tokenizer_signature: str,
+    attn_implementation: str | None = None,
 ) -> tuple[dict[str, float | int], list[dict[str, Any]]]:
     import torch
 
     print(f"loading {label}: {model_path}")
-    model, tokenizer = load_model_and_tokenizer(model_path, base_model, dtype, device_map)
+    model, tokenizer = load_model_and_tokenizer(model_path, base_model, dtype, device_map, attn_implementation)
     signature = tokenizer_signature(tokenizer)
     if signature != expected_tokenizer_signature:
         raise RuntimeError(f"{label} tokenizer differs from the base tokenizer")
@@ -203,6 +205,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, help="Explicit smoke-test limit; omitted means every held-out prompt")
     parser.add_argument("--device-map", default="auto")
     parser.add_argument("--dtype", choices=("auto", "bfloat16", "float16", "float32"), default="auto")
+    parser.add_argument("--attn-implementation", choices=("eager", "sdpa", "flash_attention_2"))
     parser.add_argument("--system-prompt", default=SHORT_SYSTEM_PROMPT)
     args = parser.parse_args()
     if args.batch_size < 1 or args.max_new_tokens < 1 or (args.limit is not None and args.limit < 1):
@@ -237,7 +240,7 @@ def main() -> None:
     base_tokenizer = AutoTokenizer.from_pretrained(args.base_model, use_fast=True)
     base_signature = tokenizer_signature(base_tokenizer)
     if args.dtype == "auto":
-        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported(including_emulation=False):
             dtype = torch.bfloat16
         elif torch.cuda.is_available():
             dtype = torch.float16
@@ -265,6 +268,7 @@ def main() -> None:
             max_new_tokens=args.max_new_tokens,
             system_prompt=args.system_prompt,
             expected_tokenizer_signature=base_signature,
+            attn_implementation=args.attn_implementation,
         )
 
     delta = {

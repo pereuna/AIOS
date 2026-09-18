@@ -41,6 +41,22 @@ def load_json(path):
 
 
 def check_config(config):
+    # Transformers 5 stores the same unscaled RoPE configuration in a nested
+    # dictionary. Normalize a copy for the QWENQ4 header without changing the
+    # saved Hugging Face configuration or accepting other RoPE algorithms.
+    config = dict(config)
+    rope = config.get("rope_parameters")
+    if rope is not None:
+        if not isinstance(rope, dict) or rope.get("rope_type") != "default":
+            fail(f"unsupported rope_parameters={rope!r}")
+        if set(rope) - {"rope_type", "rope_theta", "partial_rotary_factor"}:
+            fail(f"unsupported rope_parameters={rope!r}")
+        if rope.get("partial_rotary_factor", 1.0) != 1.0:
+            fail(f"unsupported rope_parameters={rope!r}")
+        if "rope_theta" in config and config["rope_theta"] != rope.get("rope_theta"):
+            fail("conflicting rope_theta and rope_parameters.rope_theta")
+        config["rope_theta"] = rope.get("rope_theta")
+
     expected = {
         "model_type": "qwen2",
         "hidden_act": "silu",
@@ -62,6 +78,9 @@ def check_config(config):
     for name, value in expected.items():
         if config.get(name) != value:
             fail(f"unsupported config value {name}={config.get(name)!r}")
+    if "layer_types" in config and config["layer_types"] != ["full_attention"] * LAYERS:
+        fail(f"unsupported config value layer_types={config['layer_types']!r}")
+    return config
 
 
 def byte_alphabet():
@@ -329,8 +348,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
-    config = load_json(args.config)
-    check_config(config)
+    config = check_config(load_json(args.config))
     tokenizer = load_json(args.tokenizer)
     tensors = SafeTensors(args.weights)
     write_model(args.output, config, tokenizer, tensors)

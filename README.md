@@ -1,10 +1,23 @@
 # Qwen2.5-Coder suoraan UEFI-tikulta
 
-Tässä projektissa on yksi ajettava versio: itsenäinen x86-64 UEFI-ohjelma.
+Projektin kohdeympäristö on itsenäinen x86-64 UEFI-ohjelma.
 USB-tikulla on pieni `EFI/BOOT/BOOTX64.EFI` ja mallitiedosto `model.000` tikun
 juuressa. Ohjelma lataa nelibittisen Qwen2.5-Coder-1.5B-Instruct-mallin UEFI:n
 tiedostopalveluilla RAMiin. Sen jälkeen levyä ei enää käytetä. Ajettava
 toteutus on C:tä ja hieman assembleria: ei Linuxia, C++:aa eikä llama.cpp:tä.
+
+Kehitystä varten mukana on myös [Linux-konsoli](linux/README.md): `make console`.
+Sillä voi keskustella saman Q4-mallilaskennan kanssa, kääntää asm1-ohjelmat
+samalla C-kääntäjällä ja koeajaa niiden laskennan viitetulkissa ennen
+QEMU- tai laitetestausta. `make console-test` ajaa konsolin ja asm1:n
+pikatestit ilman mallia. Konsoli kirjoittaa automaattisesti lokin tiedostoon
+`.build/console/logs/console.log`.
+
+Projektin saa toiselle koneelle komennolla
+`git clone https://github.com/pereuna/AIOS.git`. Opetusskriptit ja varmennettu
+opetusdata tulevat mukana. [Laptopin ja P2200:n ohje](training/LAPTOP.md)
+sisältää ympäristön asennuksen sekä 0,5B-mallin nopeat opetuskokeet.
+Mallipainot ja paikalliset opetustulokset ladataan tai siirretään erikseen.
 
 ## Kääntäminen
 
