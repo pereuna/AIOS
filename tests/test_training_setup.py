@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "training"))
 
 import AIOS_TRAINING_WINDOWS as launcher
 from model_checks import check_tokenizer_embeddings
-from train_asm1_lora import nonfinite_training_metric, parse_args, warmup_options
+from train_lora import nonfinite_training_metric, parse_args, warmup_options
 
 
 class VocabularyChecks(unittest.TestCase):
@@ -92,7 +92,7 @@ class WindowsLauncherChecks(unittest.TestCase):
             with redirect_stdout(io.StringIO()):
                 launcher.run_stage("train", ["--output-dir", "C:/temp/a model"])
         self.assertEqual(run.call_args.args[0], [
-            sys.executable, str(ROOT / "training" / "train_asm1_lora.py"),
+            sys.executable, str(ROOT / "training" / "train_lora.py"),
             "--output-dir", "C:/temp/a model",
         ])
         self.assertEqual(run.call_args.kwargs["cwd"], ROOT)
@@ -124,7 +124,7 @@ class WindowsLauncherChecks(unittest.TestCase):
         self.assertEqual(stage, "train")
         self.assertEqual(options.max_steps, 2)
         self.assertEqual(options.gradient_accumulation_steps, 1)
-        self.assertNotEqual(options.output_dir, ROOT / "training" / "output" / "asm1-lora")
+        self.assertNotEqual(options.output_dir, ROOT / "training" / "output" / "calc-lora")
         self.assertEqual(options.dtype, "float16")
         self.assertEqual(options.attn_implementation, "sdpa")
         self.assertEqual(options.train_limit, 64)

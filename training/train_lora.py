@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fine-tune Qwen Coder on verified asm1 completions."""
+"""Fine-tune Qwen Coder on verified calc completions."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ PRESETS = {
         "train_limit": 64,
         "eval_limit": 4,
         "logging_steps": 1,
-        "output_dir": HERE / "output" / "asm1-0.5b-smoke",
+        "output_dir": HERE / "output" / "calc-0.5b-smoke",
     },
     "small-test": {
         **SMALL_DEFAULTS,
@@ -49,7 +49,7 @@ PRESETS = {
         "logging_steps": 5,
         "eval_steps": 25,
         "save_steps": 25,
-        "output_dir": HERE / "output" / "asm1-0.5b-test",
+        "output_dir": HERE / "output" / "calc-0.5b-test",
     },
 }
 
@@ -75,7 +75,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--supplemental-repeats", type=int, default=1, help="Explicit sampling weight for supplemental examples")
     parser.add_argument("--empty-system-prompt-fraction", type=float, default=0.0,
                         help="Train some conversations without a system message, as in ai.py")
-    parser.add_argument("--output-dir", type=Path, default=HERE / "output" / "asm1-lora")
+    parser.add_argument("--output-dir", type=Path, default=HERE / "output" / "calc-lora")
     parser.add_argument("--epochs", type=float, default=2.0)
     parser.add_argument("--max-steps", type=int, default=-1, help="Positive values override --epochs")
     parser.add_argument("--train-limit", type=int, help="Use a seeded subset before preprocessing (diagnostics only)")
@@ -162,7 +162,7 @@ def main() -> None:
 
     for path in (args.train_file, args.eval_file):
         if not path.is_file():
-            raise SystemExit(f"dataset not found: {path}; run generate_asm1_dataset.py first")
+            raise SystemExit(f"dataset not found: {path}; provide verified LLM-to-LLVM-IR prompt/completion JSONL first")
     if args.lora_r < 1 or args.lora_alpha < 1 or args.max_length < 64:
         raise SystemExit("LoRA rank/alpha must be positive and --max-length must be at least 64")
     if not 0 <= args.warmup_ratio < 1:
@@ -332,7 +332,7 @@ def main() -> None:
         "train_sha256": hashlib.sha256(args.train_file.read_bytes()).hexdigest(),
         "eval_sha256": hashlib.sha256(args.eval_file.read_bytes()).hexdigest(),
     }
-    (args.output_dir / "asm1_run_config.json").write_text(
+    (args.output_dir / "calc_run_config.json").write_text(
         json.dumps(run_config, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     print(
@@ -401,10 +401,10 @@ def main() -> None:
         "evaluation_metrics": eval_result,
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    (args.output_dir / "asm1_training.json").write_text(
+    (args.output_dir / "calc_training.json").write_text(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    print(f"saved asm1 LoRA adapter to {args.output_dir}")
+    print(f"saved calc LoRA adapter to {args.output_dir}")
     print(f"tokenizer unchanged: {before_size} tokens, sha256={before_signature}")
 
 

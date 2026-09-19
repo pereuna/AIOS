@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interactive Linux development console for the AIOS bare-metal model and asm1."""
+"""Interactive Linux development console for the AIOS bare-metal model."""
 from __future__ import annotations
 
 import argparse
@@ -10,22 +10,12 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "training"))
-from asm1_runtime import ASM1_OK, ASM1_MAX_SOURCE, Asm1Compiler, execute, extract_program
 
 HELP = """Text                    Chat with the Q4 model; conversation stays in memory.
-/asm asm1; ...; end      Compile and execute asm1 with reference semantics.
-/asm                    Enter a multiline program, ending with a line 'end'.
-/load PATH              Compile and execute an asm1 UTF-8 file.
-/last                   Show the first complete asm1 program in the last reply.
-/run                    Explicitly execute that program.
-/feedback               Send the last asm1 result to the model for discussion/repair.
-/assert UINT32          Check the last execution result (useful in scripts).
-/reset                  Clear conversation, last reply and tool result.
+/reset                  Clear conversation and last reply.
 /stats                  Show model path, context and settings.
 /tokens 1..8192          Set answer token limit.
 /threads 1..4           Set CPU worker count.
@@ -33,8 +23,6 @@ HELP = """Text                    Chat with the Q4 model; conversation stays in 
 /help                   Show this help.
 /quit                   Exit. Ctrl-C stops the current model and clears its context.
 
-asm1 uses the real C compiler and a bounded source interpreter. Hardware, UEFI,
-ring-3 isolation and emitted x86 execution still need QEMU or the target machine.
 """
 
 
@@ -182,16 +170,12 @@ class Console:
     def __init__(self, args, log):
         self.args, self.log = args, log
         self.worker = None
-        self.compiler = None
         self.reply = ""
-        self.result = None
-        self.source = ""
-        self.expected = None
         self.failed = False
 
     def chat(self, prompt):
-        if self.args.asm_only:
-            raise ValueError("Model disabled by --asm-only")
+        if self.args.no_model:
+            raise ValueError("Model disabled by --no-model")
         if self.worker is None:
             self.log.write(f"Loading {self.args.model} (CPU QWENQ4)...\n")
             self.worker = ModelWorker(self.args)
@@ -199,33 +183,6 @@ class Console:
                            bytes=self.args.model.stat().st_size)
         self.reply = ""  # Never run an older answer after an interrupted request.
         self.reply = self.worker.chat(prompt, self.log)
-
-    def run_asm(self, source):
-        self.result = None
-        self.source = source
-        self.expected = None
-        if source.startswith("/asm") and (len(source) == 4 or source[4].isspace()):
-            source = source[4:].lstrip()
-        if "\0" in source or len(source.encode("utf-8")) >= ASM1_MAX_SOURCE:
-            raise ValueError("asm1 source must be at most 4095 UTF-8 bytes without NUL")
-        if self.compiler is None:
-            self.compiler = Asm1Compiler()
-        compiled = self.compiler.compile(source)
-        self.log.event("compile", source=source, **compiled._asdict())
-        if compiled.status != ASM1_OK or not compiled.complete:
-            self.result = dict(success=False, error="compile_error", status=compiled.status,
-                               line=compiled.error_line)
-            self.log.event("execution", **self.result)
-            raise ValueError(f"asm1 compile error: status={compiled.status}, line={compiled.error_line}, "
-                             f"complete={compiled.complete}")
-        started = time.monotonic()
-        result = execute(source, step_limit=self.args.step_limit)
-        self.result = result._asdict()
-        self.log.event("execution", **self.result, seconds=time.monotonic() - started)
-        if not result.success:
-            raise ValueError(f"asm1 runtime error: {result.error}; steps={result.steps}")
-        self.log.write(f"asm1: ok; value={result.value}; steps={result.steps}; "
-                       f"code={compiled.code_size} bytes; reference interpreter\n")
 
     def command(self, line):
         command, _, arg = line.partition(" ")
@@ -236,56 +193,10 @@ class Console:
             return False
         if command == "/help":
             self.log.write(HELP)
-        elif command == "/asm":
-            self.run_asm(arg)
-        elif command == "/load":
-            self.result = None
-            self.expected = None
-            if not arg:
-                raise ValueError("Use /load PATH")
-            with Path(arg).expanduser().open(encoding="utf-8") as file:
-                source = file.read(ASM1_MAX_SOURCE)
-            self.run_asm(source)
-        elif command in {"/last", "/run"}:
-            if command == "/run":
-                self.result = None
-                self.expected = None
-            if arg:
-                raise ValueError(f"Use {command} without arguments")
-            program = extract_program(self.reply)
-            if program is None:
-                raise ValueError("Last reply contains no complete /asm ... end program")
-            if command == "/last":
-                self.log.write(f"/asm {program}\n")
-            else:
-                self.run_asm(program)
-        elif command == "/feedback":
-            if self.result is None:
-                raise ValueError("Run an asm1 program first")
-            prompt = ("Program tested:\n" + self.source +
-                      "\nTool result (asm1, Linux reference interpreter): " +
-                      json.dumps(self.result) +
-                      ". Explain the result, or return a corrected /asm program on error.")
-            if self.expected is not None:
-                prompt += (f" The required result is {self.expected}. If the actual result differs, "
-                           "return only a corrected runnable /asm program.")
-            self.log.event("feedback", text=prompt)
-            self.chat(prompt)
-        elif command == "/assert":
-            expected = int(arg)
-            if not 0 <= expected <= 0xffffffff:
-                raise ValueError("Expected value must be uint32")
-            self.expected = expected
-            passed = bool(self.result and self.result.get("success") and self.result.get("value") == expected)
-            self.log.event("assertion", expected=expected, success=passed, actual=self.result)
-            if not passed:
-                raise ValueError(f"Assertion failed: expected {expected}, got {self.result}")
-            self.log.write(f"assert: PASS ({expected})\n")
         elif command == "/reset":
             if self.worker:
                 self.worker.command("RESET")
-            self.reply, self.result, self.source = "", None, ""
-            self.expected = None
+            self.reply = ""
             self.log.write("Conversation cleared.\n")
         elif command == "/stats":
             state = (self.worker.command("STATS") if self.worker else
@@ -337,10 +248,9 @@ def main():
     parser.add_argument("--tokens", type=bounded(1, 8192), default=512)
     parser.add_argument("--threads", type=bounded(1, 4), default=4)
     parser.add_argument("--simd", choices=("auto", "sse2"), default="auto")
-    parser.add_argument("--step-limit", type=bounded(1, 10_000_000), default=100_000)
     parser.add_argument("--log-dir", type=Path, default=ROOT / ".build/console/logs")
     parser.add_argument("--script", type=Path, help="Read commands from a UTF-8 file; errors give exit status 1")
-    parser.add_argument("--asm-only", action="store_true", help="Test asm1 without loading a model")
+    parser.add_argument("--no-model", action="store_true", help="Disable model loading for console command checks")
     args = parser.parse_args()
     args.model, args.worker = args.model.expanduser().resolve(), args.worker.expanduser().resolve()
     log = Log(args.log_dir)
@@ -351,10 +261,9 @@ def main():
         source = args.script.open(encoding="utf-8") if args.script else sys.stdin
         interactive = not args.script and sys.stdin.isatty()
         log.event("settings", model=str(args.model), context=args.context, tokens=args.tokens,
-                  threads=args.threads, simd=args.simd, asm_only=args.asm_only)
+                  threads=args.threads, simd=args.simd, no_model=args.no_model)
         log.write("AIOS Linux console — /help for commands\n")
         log.write(f"Log: {args.log_dir.resolve() / 'console.log'}\n")
-        log.write("asm1 execution: reference interpreter; model output runs only with /run.\n")
         while True:
             try:
                 if interactive:
@@ -363,20 +272,6 @@ def main():
                 if not raw:
                     break
                 line = raw.strip()
-                if line == "/asm":
-                    lines = []
-                    while True:
-                        if interactive:
-                            print("asm> ", end="", flush=True)
-                        raw = source.readline()
-                        if not raw:
-                            raise ValueError("Incomplete multiline asm1 program (missing end)")
-                        lines.append(raw.rstrip("\r\n"))
-                        if raw.strip() == "end":
-                            break
-                        if sum(len(part.encode("utf-8")) + 1 for part in lines) >= ASM1_MAX_SOURCE:
-                            raise ValueError("Multiline asm1 program too long")
-                    line = "/asm " + "\n".join(lines)
                 log.input(line)
                 if not interactive:
                     print(visible(f"YOU> {line}"), flush=True)
@@ -384,8 +279,7 @@ def main():
                     break
             except KeyboardInterrupt:
                 console.close()
-                console.reply, console.result, console.source = "", None, ""
-                console.expected = None
+                console.reply = ""
                 log.event("interrupted")
                 log.write("\nInterrupted; model context cleared.\n")
                 if not interactive:

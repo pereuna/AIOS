@@ -1,7 +1,7 @@
 /* Qwen2.5-Coder-1.5B-Instruct inference for the x86-64 UEFI application.
  * Q4 weights are loaded from USB once and read directly from RAM. */
 #include "baremetal/runtime.h"
-#include "baremetal/asm1_prompt.h"
+#include "baremetal/calc_prompt.h"
 #include "baremetal/model_tokens.h"
 #include <immintrin.h>
 
@@ -419,7 +419,7 @@ static int greedy(const float *logits) {
     return best;
 }
 static int turn_tokens(Model *m, const char *prompt, int first, int *ids, int cap) {
-    const char *system="<|im_start|>system\n" ASM1_SYSTEM_PROMPT "<|im_end|>\n";
+    const char *system="<|im_start|>system\n" CALC_SYSTEM_PROMPT "<|im_end|>\n";
     size_t size=strlen(prompt)+strlen(system)+128;
     char *text=alloc(size);
     const char *parts[]={first ? system : "","<|im_start|>user\n",prompt,

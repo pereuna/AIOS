@@ -7,16 +7,14 @@ tiedostopalveluilla RAMiin. Sen jälkeen levyä ei enää käytetä. Ajettava
 toteutus on C:tä ja hieman assembleria: ei Linuxia, C++:aa eikä llama.cpp:tä.
 
 Kehitystä varten mukana on myös [Linux-konsoli](linux/README.md): `make console`.
-Sillä voi keskustella saman Q4-mallilaskennan kanssa, kääntää asm1-ohjelmat
-samalla C-kääntäjällä ja koeajaa niiden laskennan viitetulkissa ennen
-QEMU- tai laitetestausta. `make console-test` ajaa konsolin ja asm1:n
-pikatestit ilman mallia. Konsoli kirjoittaa automaattisesti lokin tiedostoon
+Sillä voi keskustella saman Q4-mallilaskennan kanssa. `make console-test`
+ajaa konsolin pikatestit ilman mallia. Konsoli kirjoittaa lokin tiedostoon
 `.build/console/logs/console.log`.
 
 Projektin saa toiselle koneelle komennolla
-`git clone https://github.com/pereuna/AIOS.git`. Opetusskriptit ja varmennettu
-opetusdata tulevat mukana. [Laptopin ja P2200:n ohje](training/LAPTOP.md)
-sisältää ympäristön asennuksen sekä 0,5B-mallin nopeat opetuskokeet.
+`git clone https://github.com/pereuna/AIOS.git`.
+LLM → LLVM SSA IR → konekoodi → ring3 -laskin kuvataan
+[docs/calc.md](docs/calc.md).
 Mallipainot ja paikalliset opetustulokset ladataan tai siirretään erikseen.
 
 ## Kääntäminen
@@ -143,7 +141,7 @@ Komennot käyttöliittymässä:
 | `/run add 12 30` | Laske kahden luvun summa ring3:ssa |
 | `/run tests` | Tarkista paluu, poikkeukset ja silmukan pysäyttäminen |
 | `/run help` | Näytä prosessikokeiden ohje |
-| `/asm SOURCE` | Käännä ja suorita asm1-ohjelma käsin |
+| `/calc QUESTION` | Malli tuottaa LLVM IR:n, AIOS kääntää sen, ring3 laskee ja tulos palaa mallille |
 | `/help` | Näytä ohje |
 | `/quit` | Sammuta kone UEFI:n kautta |
 
@@ -154,21 +152,17 @@ Kokeet voi ajaa nimillä ilman konekooditavuja: `/run`, `/run add 12 30`,
 `/run tests` ajaa kaikki kuusi perustarkistusta. Tulos näkyy desimaalina,
 ja poikkeuksesta tulostetaan myös nimi ja virheen osoite. `/run help` näyttää
 ohjeen. Edistynyt `/exec HEX` säilyy; se lisää `int 0x80` -lopetuksen tavujen
-perään. Mallille tarkoitettu minimaalinen `asm1`-kääntäjä on käytettävissä
-komennolla `/asm SOURCE` (rivinvaihdot voi korvata puolipisteillä). Se kääntää
-rajatun kokonaislukukielen suoraan ring3-prosessiksi; kieli ja rajat ovat
-[docs/asm1.md](docs/asm1.md).
+perään. Tämä on AIOS:n oma testipaluu, ei Linuxin systeemikutsu.
 
-Mallin järjestelmäviesti opettaa asm1-kielen syntaksin ja käyttää sitä
-oletuksena assembly-/assembler-esimerkeissä. Muu murre, kuten Linux/GAS,
-valitaan vain käyttäjän erillisestä pyynnöstä. Esimerkiksi `Write a simple
-assembler example that adds 17 and 25.` pyytää ruudulle yhden
-`/asm asm1; ...; exit rN; end` -rivin, jonka voi syöttää konsoliin kokeiltavaksi.
-Tavallisiin kysymyksiin vastataan normaalisti. Vastaus tulostuu token
-kerrallaan yhdellä generointikierroksella. `/asm SOURCE` suoritetaan vain
-käyttäjän antamana konsolikomentona; mallin vastauksessa esiintyvä `/asm` on tavallista tekstiä.
-Komennon tulosta ei lisätä mallin keskusteluun. `asm1:` näyttää komennon
-tuloksen ja `AI>` mallin vastauksen.
+Malli tunnistaa laskettavan osuuden ja tuottaa rajatun LLVM SSA IR -funktion.
+AIOS kääntää `add/sub/mul/sdiv`-operaatiot ja niiden välitulokset x86-64-koodiksi.
+`/calc 12 + 30` tai `/calc (12 + 3) * (17 - 7)` pakottaa laskutyökalun käyttöön.
+CPU suorittaa koko ohjelman ring3:ssa, ja tulos syötetään mallin kontekstiin.
+Syötteet ja välitulokset ovat 64-bittisiä kokonaislukuja. Tavallinen aritmetiikka
+kiertää 64 bitin mukaisesti; mallin käyttämä `nsw`-muoto keskeyttää etumerkilliseen
+ylivuotoon. Jakolasku katkaisee kohti nollaa. LLVM-kirjastoa ei tarvita firmwareen.
+Tavallisiin kysymyksiin malli vastaa edelleen tekstillä.
+Katso [laskimen protokolla ja testaus](docs/calc.md).
 
 Prosessi saa 4 KiB muuttumattoman koodisivun ja 8 KiB NX-pinon suojaussivuineen.
 Kernelin muisti ei ole käyttäjätilan käytettävissä. Trap Flag rajoittaa ajon

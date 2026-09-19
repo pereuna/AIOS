@@ -31,7 +31,7 @@ EFI_CFLAGS = -O3 -std=c11 -Wall -Wextra -Wpedantic -ffreestanding -fno-builtin \
 	-fno-unwind-tables -m64 -mno-red-zone -mno-avx -msse2 -mfpmath=sse \
 	-mno-80387 -mno-mmx -ffp-contract=off -maccumulate-outgoing-args -DGNU_EFI_USE_MS_ABI \
 	-I$(EFI_ROOT)/include/efi -I$(EFI_ROOT)/include/efi/x86_64
-OBJECTS = .build/main.o .build/platform.o .build/process.o .build/process-arch.o .build/process_console.o .build/asm1.o .build/asm1_tool.o .build/mp.o .build/cpu.o .build/lib.o .build/math.o .build/fp.o
+OBJECTS = .build/main.o .build/platform.o .build/process.o .build/process-arch.o .build/process_console.o .build/calc.o .build/ir.o .build/mp.o .build/cpu.o .build/lib.o .build/math.o .build/fp.o
 BOOT = dist/EFI/BOOT/BOOTX64.EFI
 
 .PHONY: all clean model model-check test bench win FORCE
@@ -42,7 +42,7 @@ CONSOLE_MODEL ?= $(if $(wildcard .build/console-model.bin),.build/console-model.
 HOST_CFLAGS = -O3 -std=c11 -Wall -Wextra -Wpedantic -m64 -mno-avx -msse2 \
 	-mfpmath=sse -mno-80387 -mno-mmx -ffp-contract=off -fno-builtin
 CONSOLE_SOURCES = linux/model.c linux/runtime.c baremetal/math.c baremetal/cpu.c baremetal/fp.S
-CONSOLE_DEPS = neural.c baremetal/runtime.h baremetal/cpu.h baremetal/asm1_prompt.h \
+CONSOLE_DEPS = baremetal/ir.h baremetal/calc.h baremetal/calc_model.h neural.c baremetal/runtime.h baremetal/cpu.h baremetal/calc_prompt.h \
 	baremetal/model_tokens.h baremetal/nfc.h baremetal/nfc_data.h
 
 .PHONY: console console-build console-test console-model
@@ -57,7 +57,6 @@ console: console-build
 console-test: console-build .build/test-linux-runtime
 	.build/test-linux-runtime
 	$(PYTHON) -m unittest discover -s tests -p 'test_linux_console.py'
-	$(PYTHON) linux/console.py --asm-only --script linux/examples/smoke.console
 
 .build/test-linux-runtime: tests/linux_runtime.c linux/runtime.c baremetal/fp.S baremetal/runtime.h Makefile | .build
 	$(CC) $(HOST_CFLAGS) -pthread tests/linux_runtime.c linux/runtime.c baremetal/fp.S -o $@
@@ -74,8 +73,6 @@ console-model: | .build
 WIN_DEST ?= /mnt/c/temp
 WIN_TRAINING_FILES = training/*.py training/*.md training/requirements*.txt
 WIN_TOOL_FILES = tools/export_model.py tools/split_model.py tools/unicode-15.1.0.txt
-WIN_ASM1_FILES = baremetal/asm1.c baremetal/asm1.h baremetal/process.h baremetal/runtime.h
-WIN_DATA_FILES = training/data/train.jsonl training/data/eval.jsonl training/data/manifest.json training/data/asm1_foundations.jsonl
 
 win:
 	@set -eu; \
@@ -84,13 +81,35 @@ win:
 	mkdir -p "$(WIN_DEST)/training/data" "$(WIN_DEST)/tools" "$(WIN_DEST)/baremetal"; \
 	cp -p $(WIN_TRAINING_FILES) "$(WIN_DEST)/training/"; \
 	cp -p $(WIN_TOOL_FILES) "$(WIN_DEST)/tools/"; \
-	cp -p $(WIN_ASM1_FILES) "$(WIN_DEST)/baremetal/"; \
-	cp -p $(WIN_DATA_FILES) "$(WIN_DEST)/training/data/"; \
 	cp -p training/AIOS_TRAINING_WINDOWS.py "$(WIN_DEST)/AIOS_TRAINING_WINDOWS.py"; \
 	echo "Windows training bundle copied to $(WIN_DEST)"; \
 	printf '%s\n' 'Run in PowerShell: python C:\temp\AIOS_TRAINING_WINDOWS.py check'
 MODEL_PARTS = dist/model.000
 all: $(BOOT) $(MODEL_PARTS)
+
+QEMU ?= qemu-system-x86_64
+QEMU_ACCEL ?= tcg
+QEMU_CPU ?= max
+OVMF_CODE ?= /usr/share/OVMF/OVMF_CODE_4M.fd
+OVMF_VARS ?= /usr/share/OVMF/OVMF_VARS_4M.fd
+QEMU_DISPLAY ?= gtk
+
+.build/qemu-interactive/aios.img: $(BOOT) $(MODEL_PARTS)
+	mkdir -p $(@D)
+	truncate -s 0 $@
+	truncate -s 2G $@
+	mformat -i $@ -F ::
+	mcopy -i $@ -s dist/EFI ::/
+	mcopy -i $@ $(MODEL_PARTS) ::/
+
+.PHONY: qemu
+qemu: .build/qemu-interactive/aios.img
+	@test -f .build/qemu-interactive/OVMF_VARS_4M.fd || cp "$(OVMF_VARS)" .build/qemu-interactive/OVMF_VARS_4M.fd
+	$(QEMU) -machine q35 -accel $(QEMU_ACCEL) -cpu $(QEMU_CPU) -smp 4 -m 2048 \
+		-drive "if=pflash,format=raw,readonly=on,file=$(OVMF_CODE)" \
+		-drive if=pflash,format=raw,file=.build/qemu-interactive/OVMF_VARS_4M.fd \
+		-drive format=raw,snapshot=on,file=.build/qemu-interactive/aios.img \
+		-display $(QEMU_DISPLAY) -vga std -net none -no-reboot
 
 model: model.bin
 
@@ -137,10 +156,11 @@ $(GNU_EFI_STAMP):
 .build/process-arch.o: baremetal/process.S baremetal/process.h Makefile $(EFI_BOOTSTRAP) | .build
 	$(CC) -m64 -c $< -o $@
 
-.build/main.o: baremetal/nfc.h baremetal/nfc_data.h baremetal/model_tokens.h neural.c .build/config.h baremetal/process_console.h baremetal/asm1_prompt.h
-.build/process_console.o: baremetal/process.h baremetal/process_console.h baremetal/asm1.h baremetal/asm1_tool.h
-.build/asm1_tool.o .build/agent.o: baremetal/asm1_tool.h baremetal/asm1.h baremetal/process.h baremetal/agent.h
-.build/asm1.o: baremetal/asm1.c baremetal/asm1.h baremetal/process.h baremetal/runtime.h
+.build/main.o: baremetal/nfc.h baremetal/nfc_data.h baremetal/model_tokens.h neural.c .build/config.h baremetal/process_console.h baremetal/calc.h baremetal/calc_model.h baremetal/calc_prompt.h
+.build/calc.o: baremetal/calc.h baremetal/ir.h baremetal/process.h
+.build/ir.o: baremetal/ir.h baremetal/process.h
+.build/main.o .build/process-test-main.o .build/calc-live.o: baremetal/ir.h
+.build/process_console.o: baremetal/process.h baremetal/process_console.h
 .build/mp.o .build/platform.o: baremetal/mp.h
 .build/cpu.o: baremetal/cpu.h
 
@@ -182,34 +202,29 @@ MP_TEST_DEPS = $(MP_TEST_SOURCES) tests/mp_firmware.h baremetal/mp.h baremetal/c
 .build/test-file-loader: tests/file_loader.c baremetal/platform.c baremetal/mp.h baremetal/runtime.h Makefile $(EFI_BOOTSTRAP) | .build
 	$(CC) $(EFI_CFLAGS) tests/file_loader.c -o $@
 
-.build/test-process-console: tests/process_console.c baremetal/process_console.c baremetal/asm1.c baremetal/asm1_tool.c baremetal/process_console.h baremetal/process.h baremetal/asm1.h baremetal/asm1_tool.h | .build
-	$(CC) -O2 -std=c11 -Wall -Wextra -Wpedantic tests/process_console.c baremetal/process_console.c baremetal/asm1.c baremetal/asm1_tool.c -o $@
+.build/test-process-console: tests/process_console.c baremetal/process_console.c baremetal/process_console.h baremetal/process.h | .build
+	$(CC) -O2 -std=c11 -Wall -Wextra -Wpedantic tests/process_console.c baremetal/process_console.c -o $@
 
-.build/test-agent: tests/agent.c baremetal/agent.c baremetal/asm1.c baremetal/asm1_tool.c baremetal/agent.h baremetal/asm1.h baremetal/asm1_tool.h | .build
-	$(CC) -O2 -std=c11 -Wall -Wextra -Wpedantic tests/agent.c baremetal/agent.c baremetal/asm1.c baremetal/asm1_tool.c -o $@
+.build/test-inference .build/test-simd : baremetal/calc_prompt.h baremetal/nfc.h baremetal/nfc_data.h baremetal/model_tokens.h
 
-.build/test-agent-model: tests/agent_model.c baremetal/agent_model.h baremetal/model_tokens.h baremetal/agent.h baremetal/asm1_tool.h | .build
-	$(CC) -O2 -std=c11 -Wall -Wextra -Wpedantic tests/agent_model.c -o $@
-
-.build/test-inference .build/test-simd .build/agent-live.o: baremetal/asm1_prompt.h baremetal/nfc.h baremetal/nfc_data.h baremetal/model_tokens.h
-
-test: all .build/test-inference .build/test-file-loader .build/test-parallel .build/test-simd .build/test-process-console .build/test-agent .build/test-agent-model
+test: all .build/test-ir .build/test-calc .build/test-calc-model .build/test-inference .build/test-file-loader .build/test-parallel .build/test-simd .build/test-process-console
 	$(PYTHON) -m unittest discover -s tests -p 'test_*.py'
 	.build/test-file-loader
 	.build/test-parallel
 	.build/test-simd
 	.build/test-process-console
-	.build/test-agent
-	.build/test-agent-model
+	.build/test-calc
+	.build/test-calc-model
+	.build/test-ir
 	$(PYTHON) tests/verify.py
 
 bench: model.bin .build/test-inference
 	$(PYTHON) tests/bench.py
 
-.build/process-test-main.o: tests/process_uefi.c tests/asm1_cases.h baremetal/process.h baremetal/process_console.h baremetal/asm1.h baremetal/runtime.h baremetal/agent.h baremetal/asm1_tool.h $(EFI_BOOTSTRAP) | .build
+.build/process-test-main.o: tests/process_uefi.c tests/ir_cases.h baremetal/calc.h baremetal/process.h baremetal/process_console.h baremetal/runtime.h $(EFI_BOOTSTRAP) | .build
 	$(CC) $(EFI_CFLAGS) -c $< -o $@
 
-.build/process-test.so: .build/process-test-main.o .build/agent.o $(filter-out .build/main.o,$(OBJECTS)) $(EFI_BOOTSTRAP)
+.build/process-test.so: .build/process-test-main.o $(filter-out .build/main.o,$(OBJECTS)) $(EFI_BOOTSTRAP)
 	ld -nostdlib -znocombreloc -shared -Bsymbolic --no-undefined \
 		-T $(EFI_ROOT)/lib/elf_x86_64_efi.lds $(EFI_ROOT)/lib/crt0-efi-x86_64.o \
 		$(filter %.o,$^) --wrap=bm_pages_alloc --wrap=bm_pages_free -L$(EFI_ROOT)/lib -lgnuefi -o $@
@@ -223,24 +238,7 @@ test-process: .build/process-test.efi
 	$(PYTHON) tests/process_qemu.py
 	$(PYTHON) tests/process_qemu.py --cpus 4
 
-.build/agent-live.o: tests/agent_live.c neural.c baremetal/agent_model.h baremetal/asm1_prompt.h baremetal/agent.h baremetal/asm1_tool.h $(EFI_BOOTSTRAP) | .build
-	$(CC) $(EFI_CFLAGS) -Wno-unused-function -c $< -o $@
-
-.build/agent-live.so: .build/agent-live.o .build/agent.o $(filter-out .build/main.o,$(OBJECTS)) $(EFI_BOOTSTRAP)
-	ld -nostdlib -znocombreloc -shared -Bsymbolic --no-undefined \
-		-T $(EFI_ROOT)/lib/elf_x86_64_efi.lds $(EFI_ROOT)/lib/crt0-efi-x86_64.o \
-		$(filter %.o,$^) -L$(EFI_ROOT)/lib -lgnuefi -o $@
-
-.build/agent-live.efi: .build/agent-live.so
-	$(OBJCOPY) -j .text -j .data -j .rodata -j .dynamic -j .dynsym -j .rel \
-		-j .rela -j .reloc -O pei-x86-64 --subsystem=10 $< $@
-
-.PHONY: test-agent-live
-test-agent-live: .build/agent-live.efi model.bin
-	$(PYTHON) tests/process_qemu.py --image .build/agent-live.efi --model model.bin \
-		--memory 2048 --timeout 900 --accel kvm --cpus 4
-
-.build/model-test-main.o: tests/model_uefi.c neural.c baremetal/nfc.h baremetal/nfc_data.h baremetal/model_tokens.h baremetal/asm1_prompt.h .build/config.h $(EFI_BOOTSTRAP) | .build
+.build/model-test-main.o: tests/model_uefi.c neural.c baremetal/nfc.h baremetal/nfc_data.h baremetal/model_tokens.h baremetal/calc_prompt.h .build/config.h $(EFI_BOOTSTRAP) | .build
 	$(CC) $(EFI_CFLAGS) -Wno-unused-function -c $< -o $@
 
 .build/model-test.so: .build/model-test-main.o $(filter-out .build/main.o,$(OBJECTS)) $(EFI_BOOTSTRAP)
@@ -259,3 +257,74 @@ test-model-uefi: .build/model-test.efi model.bin
 
 clean:
 	rm -rf .build dist
+
+.build/test-calc: tests/calc.c baremetal/calc.c baremetal/ir.c baremetal/ir.h baremetal/calc.h baremetal/process.h | .build
+	$(CC) -O2 -std=c11 -Wall -Wextra -Wpedantic tests/calc.c baremetal/calc.c baremetal/ir.c -o $@
+
+.build/test-ir: tests/ir.c tests/ir_cases.h baremetal/ir.c baremetal/ir.h baremetal/calc.h baremetal/process.h | .build
+	$(CC) -O2 -std=c11 -Wall -Wextra -Wpedantic tests/ir.c baremetal/ir.c -o $@
+
+# Optional independent LLVM oracle; llvmlite is a HOST-ONLY test dependency.
+LLVM_PYTHON ?= $(PYTHON)
+.build/ir-llvm-cases.h: tests/verify_ir.py .build/test-ir
+	$(LLVM_PYTHON) tests/verify_ir.py --output $@
+
+.build/ir-llvm-main.o: tests/ir_llvm_uefi.c .build/ir-llvm-cases.h baremetal/ir.h baremetal/calc.h $(EFI_BOOTSTRAP)
+	$(CC) $(EFI_CFLAGS) -c $< -o $@
+
+.build/ir-llvm.so: .build/ir-llvm-main.o $(filter-out .build/main.o,$(OBJECTS)) $(EFI_BOOTSTRAP)
+	ld -nostdlib -znocombreloc -shared -Bsymbolic --no-undefined \
+		-T $(EFI_ROOT)/lib/elf_x86_64_efi.lds $(EFI_ROOT)/lib/crt0-efi-x86_64.o \
+		$(filter %.o,$^) -L$(EFI_ROOT)/lib -lgnuefi -o $@
+
+.build/ir-llvm.efi: .build/ir-llvm.so
+	$(OBJCOPY) -j .text -j .data -j .rodata -j .dynamic -j .dynsym -j .rel \
+		-j .rela -j .reloc -O pei-x86-64 --subsystem=10 $< $@
+
+.PHONY: test-ir-llvm
+test-ir-llvm: .build/ir-llvm.efi
+	$(PYTHON) tests/process_qemu.py --image .build/ir-llvm.efi
+
+.build/calc-live.o: tests/calc_live.c neural.c baremetal/calc_model.h baremetal/calc_prompt.h baremetal/calc.h .build/config.h $(EFI_BOOTSTRAP) | .build
+	$(CC) $(EFI_CFLAGS) -Wno-unused-function -c $< -o $@
+
+.build/calc-live.so: .build/calc-live.o $(filter-out .build/main.o,$(OBJECTS)) $(EFI_BOOTSTRAP)
+	ld -nostdlib -znocombreloc -shared -Bsymbolic --no-undefined \
+		-T $(EFI_ROOT)/lib/elf_x86_64_efi.lds $(EFI_ROOT)/lib/crt0-efi-x86_64.o \
+		$(filter %.o,$^) -L$(EFI_ROOT)/lib -lgnuefi -o $@
+
+.build/calc-live.efi: .build/calc-live.so
+	$(OBJCOPY) -j .text -j .data -j .rodata -j .dynamic -j .dynsym -j .rel \
+		-j .rela -j .reloc -O pei-x86-64 --subsystem=10 $< $@
+
+.PHONY: test-calc-live
+CALC_ACCEL ?= tcg
+CALC_TIMEOUT ?= 1800
+CALC_LOG ?= .build/calc-live.log
+test-calc-live: .build/calc-live.efi model.bin
+	$(PYTHON) tests/process_qemu.py --image .build/calc-live.efi --model model.bin \
+        --memory 2048 --cpus 4 --timeout $(CALC_TIMEOUT) --accel $(CALC_ACCEL) --log "$(CALC_LOG)"
+
+.build/test-calc-model: tests/calc_model.c baremetal/calc.c baremetal/ir.c baremetal/ir.h baremetal/calc_model.h baremetal/calc.h | .build
+	$(CC) -O2 -std=c11 -Wall -Wextra -Wpedantic tests/calc_model.c baremetal/calc.c baremetal/ir.c -o $@
+
+# Same calc_live.c and calc_model.h, native Q4 inference + real VM ring3.
+# Useful when nested KVM is unavailable and full-model TCG is too slow.
+.build/test-calc-native: tests/calc_live.c tests/calc_native_backend.c baremetal/calc.c baremetal/ir.c baremetal/calc.h baremetal/calc_model.h $(CONSOLE_DEPS) linux/runtime.c baremetal/math.c baremetal/cpu.c baremetal/fp.S Makefile | .build
+	$(CC) $(HOST_CFLAGS) -DCALC_HOST -Wno-unused-function -pthread tests/calc_live.c tests/calc_native_backend.c baremetal/calc.c baremetal/ir.c linux/runtime.c baremetal/math.c baremetal/cpu.c baremetal/fp.S -o $@
+
+.build/calc-request.o: tests/calc_request_uefi.c .build/calc-request.h baremetal/process.h $(EFI_BOOTSTRAP) | .build
+	$(CC) $(EFI_CFLAGS) -c $< -o $@
+
+.build/calc-request.so: .build/calc-request.o $(filter-out .build/main.o,$(OBJECTS)) $(EFI_BOOTSTRAP)
+	ld -nostdlib -znocombreloc -shared -Bsymbolic --no-undefined \
+		-T $(EFI_ROOT)/lib/elf_x86_64_efi.lds $(EFI_ROOT)/lib/crt0-efi-x86_64.o \
+		$(filter %.o,$^) -L$(EFI_ROOT)/lib -lgnuefi -o $@
+
+.build/calc-request.efi: .build/calc-request.so
+	$(OBJCOPY) -j .text -j .data -j .rodata -j .dynamic -j .dynsym -j .rel \
+		-j .rela -j .reloc -O pei-x86-64 --subsystem=10 $< $@
+
+.PHONY: test-calc-native
+test-calc-native: .build/test-calc-native model.bin
+	.build/test-calc-native

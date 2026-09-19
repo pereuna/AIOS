@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Windows entry point for the AIOS asm1 training workflow.
+"""Windows entry point for the AIOS calc training workflow.
 
 This script never installs packages.  Run ``check`` first, then choose one of
 the workflow stages explicitly.
@@ -21,13 +21,11 @@ import traceback
 
 
 ROOT = Path(__file__).resolve().parent
-if (ROOT / "train_asm1_lora.py").is_file():
+if (ROOT / "train_lora.py").is_file():
     ROOT = ROOT.parent
 SCRIPTS = {
-    "generate": ROOT / "training" / "generate_asm1_dataset.py",
-    "train": ROOT / "training" / "train_asm1_lora.py",
-    "merge": ROOT / "training" / "merge_asm1_lora.py",
-    "eval": ROOT / "training" / "eval_asm1.py",
+    "train": ROOT / "training" / "train_lora.py",
+    "merge": ROOT / "training" / "merge_lora.py",
 }
 PYTHON_PACKAGES = ("torch", "transformers", "datasets", "trl", "peft", "accelerate", "safetensors", "numpy")
 TRAINING_APIS = {
@@ -239,7 +237,7 @@ def main() -> None:
     parser.add_argument(
         "stage",
         nargs="?",
-        choices=("check", "gpu", "model-check", "smoke", "generate", "train", "merge", "eval"),
+        choices=("check", "gpu", "model-check", "smoke", "train", "merge"),
         default="check",
     )
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
@@ -257,7 +255,7 @@ def main() -> None:
             "--lora-r", "8", "--lora-alpha", "16", "--dtype", "float16",
             "--attn-implementation", "sdpa", "--logging-steps", "1",
             "--train-limit", "64", "--eval-limit", "4", "--warmup-ratio", "0",
-            "--output-dir", str(ROOT / "training" / "output" / "asm1-smoke"),
+            "--output-dir", str(ROOT / "training" / "output" / "calc-smoke"),
             *(["--diagnose"] if args.stage == "model-check" else []),
             *args.arguments,
         ])

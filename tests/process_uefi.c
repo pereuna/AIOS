@@ -2,9 +2,8 @@
 #include "../baremetal/runtime.h"
 #include "../baremetal/process.h"
 #include "../baremetal/process_console.h"
-#include "../baremetal/asm1.h"
-#include "asm1_cases.h"
-#include "../baremetal/agent.h"
+#include "../baremetal/calc.h"
+#include "ir_cases.h"
 
 static void log_line(const char *s) {
     while (*s) __asm__ volatile("outb %0,$0xe9" :: "a"(*s++));
@@ -113,57 +112,31 @@ static void workers(void) {
     bm_parallel_end();
     for (unsigned i=0;i<32;i++) require(values[i]==i*3+1,"FAIL: MP after process");
 }
-static unsigned asm_count;
-static void check_asm(const char *source, uint32_t expected, int status) {
-    asm1_program p;
-    if (asm1_compile(source,&p)) { log_line(source); require(0,"FAIL: asm compile"); }
-    snapshot before=state();
-    bm_process_result r;
-    int actual=bm_process_run_input(p.code,p.code_size,p.input,p.input_count,&r);
-    restored(before,state());
-    require(!live,"FAIL: asm page leak");
-    if (actual!=status || (!status && r.rax!=expected)) {
-        log_line(source);
-        bm_puts("asm actual "); bm_uint(r.rax); bm_puts(" expected "); bm_uint(expected);
-        bm_puts(" status "); bm_hex((uint32_t)actual,8); bm_putc('\n');
-        require(0,"FAIL: asm semantics");
+static void calculator(void) {
+    static const struct { const char *text; int64_t answer; int status; } rows[]={
+        {"/bytes 12 + 30 : 48 bb 00 20 00 00 00 40 00 00 48 63 03 48 63 4b 04 48 01 c8 cd 80",42,0},
+        {"/bytes 17 - 25 : 48 bb 00 20 00 00 00 40 00 00 48 63 03 48 63 4b 04 48 29 c8 cd 80",-8,0},
+        {"/bytes -157 * -207 : 48 bb 00 20 00 00 00 40 00 00 48 63 03 48 63 4b 04 48 0f af c1 cd 80",32499,0},
+        {"/bytes -17 / 5 : 48 bb 00 20 00 00 00 40 00 00 48 63 03 48 63 4b 04 48 99 48 f7 f9 cd 80",-3,0},
+        {"/bytes 2147483647 + 2147483647 : 48 bb 00 20 00 00 00 40 00 00 48 63 03 48 63 4b 04 48 01 c8 cd 80",4294967294ll,0},
+        {"/bytes -2147483648 * -2147483648 : 48 bb 00 20 00 00 00 40 00 00 48 63 03 48 63 4b 04 48 0f af c1 cd 80",4611686018427387904ll,0},
+        {"/bytes -2147483648 / -1 : 48 bb 00 20 00 00 00 40 00 00 48 63 03 48 63 4b 04 48 99 48 f7 f9 cd 80",2147483648ll,0},
+        {"/bytes 7 / 0 : 48 bb 00 20 00 00 00 40 00 00 48 63 03 48 63 4b 04 48 99 48 f7 f9 cd 80",0,BM_PROCESS_FAULT_BASE},
+    };
+    for (unsigned i=0;i<sizeof(rows)/sizeof(*rows);i++) {
+        snapshot before=state(); bm_calc_result result;
+        require(bm_calc_execute(rows[i].text,NULL,&result)==rows[i].status,"FAIL: calc status");
+        if (!rows[i].status) require(result.process.rax==(uint64_t)rows[i].answer,"FAIL: calc answer");
+        restored(before,state()); require(!live,"FAIL: calc leaked pages"); workers();
     }
-    asm_count++;
-}
-typedef struct { unsigned round, feeds, final; snapshot before; } agent_fixture;
-static void fixture_generate(void *context, unsigned budget, unsigned reserve, agent_reply *reply) {
-    agent_fixture *f=context;
-    const char *messages[]={
-        "/asm asm1; li r0 42; end",
-        "/asm asm1; li r0 42; li r1 0; udiv r0 r1; exit r0; end",
-        "/asm asm1; input 12 30; ld r0 0; ld r1 1; add r0 r1; exit r0; end",
-        "The result is 42."};
-    require(f->round<4 && budget>0 && reserve>=2,"FAIL: agent generation budget");
-    const char *text=messages[f->round++];
-    memcpy(reply->text,text,strlen(text)+1); reply->tokens=20; reply->stop=AGENT_END;
-}
-static int fixture_feedback(void *context, const char *text, int final_only) {
-    agent_fixture *f=context;
-    const char *expected[]={"compile_error E_NO_EXIT","runtime_error E_FAULT vector=0", "ok; value=42;"};
-    require(f->feeds<3 && !memcmp(text,expected[f->feeds],strlen(expected[f->feeds])),"FAIL: agent feedback");
-    require(final_only==(f->feeds==2),"FAIL: agent final-only control");
-    f->feeds++;
-    restored(f->before,state());
-    require(!live,"FAIL: agent process memory leaked");
-    workers(); /* The model's worker pool remains usable between tool calls. */
-    return 1;
-}
-static void fixture_display(void *context, const char *text, int tool) {
-    agent_fixture *f=context;
-    if (!tool) { require(!strcmp(text,"The result is 42."),"FAIL: agent answer"); f->final++; }
-}
-static void check_agent(void) {
-    agent_fixture f={.before=state()};
-    agent_io io={&f,fixture_generate,fixture_feedback,fixture_display};
-    agent_result r=agent_run(&io,512);
-    require(r.stop==AGENT_END && r.calls==3 && r.tokens==80 && f.feeds==3 && f.final==1,
-            "FAIL: autonomous agent loop");
-    log_line("AGENT PASS: compile error -> runtime fault -> ring3 result -> final answer, no user input");
+    log_line("CALC PASS: four operations, signed inputs, 64-bit results, division fault, firmware/MP restored");
+    for (unsigned i=0;i<IR_CASE_COUNT;i++) {
+        snapshot before=state(); bm_calc_result result;
+        require(bm_calc_execute(ir_cases[i].source,NULL,&result)==ir_cases[i].status,"FAIL: LLVM IR status");
+        if (!ir_cases[i].status) require(result.process.rax==ir_cases[i].answer,"FAIL: LLVM IR answer");
+        restored(before,state()); require(!live,"FAIL: LLVM IR leaked pages"); workers();
+    }
+    log_line("LLVM IR PASS: SSA chains/reuse, i64 wrapping, nsw overflow, sdiv faults, firmware/MP restored");
 }
 /* Install a real busy TSS in a shadow firmware GDT, to exercise the case
  * which LTR(old_tr) alone cannot restore. Do not write to OVMF's GDT. */
@@ -189,6 +162,7 @@ _Noreturn void bm_main(void) {
     bm_parallel_set_limit(BM_MAX_THREADS);
     workers();
     log_line("PROCESS BEGIN");
+    calculator();
     bm_process_result r=check("exit-42",exit42,sizeof(exit42),0);
     require(r.rax==42 && r.steps==1,"FAIL: exit value/steps");
     unsigned char divide[]={0x31,0xc9,0xf7,0xf1};
@@ -204,22 +178,6 @@ _Noreturn void bm_main(void) {
     unsigned char null[]={0x31,0xc0,0x48,0x8b,0x00};
     r=check("null read",null,sizeof(null),BM_PROCESS_FAULT_BASE+14);
     require(r.address==0 && (r.error&4),"FAIL: user page fault data");
-    asm1_program ap;
-    require(asm1_compile("input 12 30; ld r0 0; ld r1 1; add r0 r1; exit r0; end",&ap)==ASM1_OK,
-            "FAIL: asm1 compile");
-    log_line("asm1 add");
-    snapshot asm_before=state();
-    r.status=BM_PROCESS_INTERNAL;
-    int asm_status=bm_process_run_input(ap.code,ap.code_size,ap.input,ap.input_count,&r);
-    snapshot asm_after=state();
-    if (!(asm_status==0 && !live)) { bm_puts("asm status "); bm_hex((uint32_t)asm_status,8); bm_puts(" addr "); bm_hex(r.address,16); bm_puts(" rip "); bm_hex(r.rip,16); bm_putc('\n'); finish(0x11); }
-    restored(asm_before,asm_after);
-    require(r.rax==42,"FAIL: asm1 result");
-    log_line("asm1 instruction/reference suite");
-    asm_cases(check_asm);
-    bm_puts("ASM cases passed: "); bm_uint(asm_count); bm_putc('\n');
-    log_line("ASM PASS: registers, aliases, source preservation, arithmetic, memory, branches, faults");
-    check_agent();
     /* MOVABS RAX,address; MOV [RAX],RBX (writes kernel data/code). */
     unsigned char memory[]={0x48,0xb8,0,0,0,0,0,0,0,0,0x48,0x89,0x18};
     static uint64_t canary=0x12345678;

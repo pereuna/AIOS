@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge an asm1 LoRA adapter into the original Qwen BF16 checkpoint."""
+"""Merge an LLM-to-LLVM-IR LoRA adapter into the original Qwen BF16 checkpoint."""
 
 from __future__ import annotations
 
@@ -31,9 +31,9 @@ def tokenizer_signature(tokenizer) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--adapter", type=Path, default=HERE / "output" / "asm1-lora")
+    parser.add_argument("--adapter", type=Path, default=HERE / "output" / "calc-lora")
     parser.add_argument("--base-model", help="Override the base recorded in adapter_config.json")
-    parser.add_argument("--output-dir", type=Path, default=HERE / "output" / "asm1-merged")
+    parser.add_argument("--output-dir", type=Path, default=HERE / "output" / "calc-merged")
     parser.add_argument("--device-map", default="auto", help="Transformers device map; use 'cpu' to force CPU")
     parser.add_argument("--max-shard-size", default="5GB")
     parser.add_argument("--overwrite", action="store_true")
@@ -130,7 +130,7 @@ def main() -> None:
         "aios_exporter_validated": True,
         "weights": weights.name,
     }
-    (output_dir / "asm1_merge.json").write_text(
+    (output_dir / "calc_merge.json").write_text(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     print(f"saved merged BF16 safetensors checkpoint to {output_dir}")

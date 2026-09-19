@@ -16,9 +16,10 @@ def main():
     parser.add_argument("--accel", default="tcg")
     parser.add_argument("--cpus", type=int, default=1)
     parser.add_argument("--image", default=".build/process-test.efi")
-    parser.add_argument("--model", type=Path, help="optional model.bin for the live agent test")
+    parser.add_argument("--model", type=Path, help="optional model.bin for model inference tests")
     parser.add_argument("--memory", type=int, default=256, help="VM RAM in MiB")
     parser.add_argument("--timeout", type=int, default=60, help="host timeout in seconds")
+    parser.add_argument("--log", type=Path, help="write VM output immediately for slow live-model tests")
     args = parser.parse_args()
     if not Path(args.firmware).is_file():
         parser.error("set OVMF_CODE or --firmware to an OVMF code image")
@@ -51,9 +52,16 @@ def main():
                    "-debugcon", "stdio", "-device", "isa-debug-exit,iobase=0xf4,iosize=4",
                    "-no-reboot"]
         try:
-            result = subprocess.run(command, capture_output=True, timeout=args.timeout)
+            if args.log:
+                args.log.parent.mkdir(parents=True,exist_ok=True)
+                with args.log.open("wb") as log:
+                    result = subprocess.run(command, stdout=log, stderr=subprocess.PIPE, timeout=args.timeout)
+                result.stdout=args.log.read_bytes()
+            else:
+                result = subprocess.run(command, capture_output=True, timeout=args.timeout)
         except subprocess.TimeoutExpired as error:
-            print((error.stdout or b"").decode(errors="replace"), end="")
+            output=args.log.read_bytes() if args.log else error.stdout or b""
+            print(output.decode(errors="replace"), end="")
             raise SystemExit(f"FAIL: ring3/firmware test hung ({args.timeout}s timeout)") from error
         print(result.stdout.decode(errors="replace"), end="")
         if result.returncode != 33 or b"PROCESS PASS" not in result.stdout:

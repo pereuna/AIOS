@@ -1,7 +1,6 @@
 #include "runtime.h"
 #include "process.h"
 #include "process_console.h"
-#include "asm1_tool.h"
 
 static const struct {
     const char *name, *description;
@@ -26,8 +25,7 @@ static void help(void) {
             "/run loop           test the instruction limit\n"
             "/run tests          run all six checks\n"
             "/run help           show these commands\n"
-            "/exec HEX           advanced: raw machine code, exit appended\n"
-            "/asm SOURCE         compile and run asm1 (use ';' for newlines)\n");
+            "/exec HEX           advanced: raw machine code, exit appended\n");
 }
 static int hex_digit(char c) {
     if (c>='0' && c<='9') return c-'0';
@@ -93,12 +91,6 @@ static int run(const char *description, const unsigned char *program, size_t byt
     bm_putc('\n');
     return status;
 }
-static void run_asm(const char *source) {
-    asm1_result r; char text[ASM1_FEEDBACK_SIZE];
-    asm1_execute(source,0,&r);
-    asm1_feedback(&r,text);
-    bm_puts("asm1: "); bm_puts(text); bm_putc('\n');
-}
 /* A command must end or have a separator: /runner is not /run. */
 static const char *argument(const char *line, const char *command) {
     size_t n=strlen(command);
@@ -126,8 +118,6 @@ int bm_process_command(const char *line) {
     unsigned char program[BM_PROCESS_MAX_CODE];
     bm_process_result result;
     if (!args) {
-        args=argument(line,"/asm");
-        if (args) { run_asm(args); return 1; }
         args=argument(line,"/exec");
         if (!args) args=argument(line,"/excec"); /* Common spelling from the console. */
         if (!args) return 0;

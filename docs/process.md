@@ -21,9 +21,10 @@ palautuvat oikein. `/run help` näyttää komennot.
 `/exec` on raakakoodin lisärajapinta, esimerkiksi `/exec b8 2a 00 00 00`.
 Se hyväksyy kokonaisia heksatavupareja ja lisää `cd 80` lopetukseksi.
 Pariton tai virheellinen syöte ei käynnistä prosessia. Nimetyt kokeet eivät
-tarvitse heksasyötettä. Rajattu mallille tarkoitettu `asm1`-kääntäjä on
-käytettävissä komennolla `/asm SOURCE`; syntaksi ja rajat ovat
-[docs/asm1.md](asm1.md).
+tarvitse heksasyötettä. `int 0x80` on AIOS:n oma ring3-testin paluurajapinta;
+se ei toteuta Linuxin systeemikutsuja. Ring3-testi ei voi suorittaa ring0:n
+laiteohjausta. Nykyinen [LLM → LLVM IR → konekoodi -laskin](calc.md) käyttää
+tätä ring3-harnessia myös usean kokonaislukuoperaation SSA-ohjelmien suorittamiseen.
 
 ## Rajapinta ja muistimalli
 

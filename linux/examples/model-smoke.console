@@ -1,11 +1,2 @@
-Write an asm1 program computing 6*7. Output only the runnable /asm command, without Markdown or explanation.
-/run
-/assert 42
-/stats
-Change that program to add 1 to its result. Again output only the runnable /asm command.
-/run
-/assert 43
-/stats
-/reset
-/stats
+I have 13 boxes with 9 bolts each. How many bolts are there?
 /quit

@@ -3,14 +3,13 @@
 #include "../.build/config.h"
 #include "process_console.h"
 
+static void calc_progress(unsigned done, unsigned total);
+#define BM_CALC_PROGRESS calc_progress
+#include "calc_model.h"
+
 static void elapsed(uint64_t ticks) {
     bm_uint(ticks/100); bm_putc('.');
     bm_putc((char)('0'+ticks/10%10)); bm_putc((char)('0'+ticks%10));
-}
-static void rate(unsigned tokens, uint64_t ticks) {
-    if (!ticks) { bm_puts("n/a"); return; }
-    uint64_t hundredths=(uint64_t)tokens*10000/ticks;
-    elapsed(hundredths);
 }
 static void workers_status(void) {
     bm_puts("Compute: "); bm_puts(bm_parallel_mode()); bm_puts("; workers ");
@@ -19,6 +18,14 @@ static void workers_status(void) {
     bm_puts("Matvec: "); bm_puts(bm_simd_auto() ? "auto" : "forced SSE2");
     bm_puts("; BSP "); bm_puts(bm_cpu_avx2_status());
     bm_puts("; last run "); bm_puts(bm_simd_used()); bm_putc('\n');
+}
+static void calc_progress(unsigned done, unsigned total) {
+    if (!done) {
+        bm_puts("[model prefill "); bm_uint(total); bm_puts(" tokens]\n");
+    } else {
+        bm_puts("[model prefill "); bm_uint(done); bm_putc('/');
+        bm_uint(total); bm_puts("]\n");
+    }
 }
 static int integer(const char *s, unsigned min, unsigned max) {
     if (!*s) return -1;
@@ -37,33 +44,8 @@ static void help(void) {
             "/threads N   1..4 workers (1 = serial comparison)\n"
             "/simd auto|sse2   select matvec instructions\n"
             "/run     ring3 test             /run help   process commands\n"
-            "/asm SOURCE   compile and run asm1 (use ';' for newlines)\n"
-            "/help    show help              /quit       power off\n"
-            "\n"
-            "asm1 commands (space-separated operands; no commas):\n"
-            "  li rd N       load constant N (uint32 0..4294967295)\n"
-            "  mov rd rs     copy register rs to rd\n"
-            "  add rd rs     rd = rd + rs\n"
-            "  sub rd rs     rd = rd - rs\n"
-            "  mul rd rs     rd = rd * rs\n"
-            "  udiv rd rs    unsigned rd = rd / rs\n"
-            "  umod rd rs    unsigned rd = rd % rs\n"
-            "  and rd rs     bitwise AND into rd\n"
-            "  or rd rs      bitwise OR into rd\n"
-            "  xor rd rs     bitwise XOR into rd\n"
-            "  shl rd rs     shift rd left by (rs & 31)\n"
-            "  shr rd rs     shift rd right by (rs & 31)\n"
-            "  eq rd rs      rd = 1 if old rd == rs, otherwise 0\n"
-            "  lt rd rs      rd = 1 if old rd < rs (unsigned), otherwise 0\n"
-            "  ld rd I       load memory cell I (0..255) into rd\n"
-            "  st I rs       store rs into memory cell I (0..255)\n"
-            "  input A B ...  initialize memory cells 0, 1, ... (max 64)\n"
-            "  label lK      define label l0..l31\n"
-            "  jmp lK        unconditional jump\n"
-            "  jz rN lK      jump if register rN is zero\n"
-            "  exit rN       return register rN (required)\n"
-            "Registers are r0..r9; arithmetic wraps modulo 2^32.\n"
-            "Optional source markers: asm1 and end; end must be last.\n");
+            "/calc QUESTION   model -> LLVM IR -> machine code -> ring3 -> answer\n"
+            "/help    show help              /quit       power off\n");
 }
 static void math_check(void) {
     bm_fp_prepare();
@@ -102,40 +84,6 @@ static void selftest(Model *m) {
     free_state(s);
     if (bm_heap_available()!=before) bm_panic("selftest leaked heap memory");
     bm_puts("SELFTEST END heap restored\n");
-}
-static void respond(Model *m, State *s, int *ids, int n, int limit) {
-    bm_simd_reset();
-    bm_parallel_begin();
-    workers_status();
-    uint64_t start=bm_ticks;
-    for (int i=0;i<n;i++) forward(m,s,ids[i],i==n-1);
-    uint64_t ready=bm_ticks;
-    unsigned count=0;
-    const char *stop="token limit reached";
-    bm_puts("AI> ");
-    while (count<(unsigned)limit) {
-        if (s->pos+2>=s->ctx) { stop="context limit reached"; break; }
-        int token=greedy(s->logits);
-        count++;
-        if (model_token_end(token)) { stop="complete"; break; }
-        if (!model_token_text(token)) { stop="invalid control token"; break; }
-        Word w=m->words[token];
-        int invalid=0;
-        for (unsigned i=0;i<w.n;i++) if (!w.p[i]) invalid=1;
-        if (invalid) { stop="invalid control token"; break; }
-        bm_write(w.p,w.n);
-        forward(m,s,token,1);
-    }
-    /* Close the assistant turn even when generation reaches a limit. */
-    forward(m,s,MODEL_EOS,0); forward(m,s,(int)m->byte_id['\n'],0);
-    bm_parallel_end();
-    uint64_t end=bm_ticks;
-    bm_puts("\n[prompt "); bm_uint((unsigned)n); bm_puts(" tokens, "); elapsed(ready-start);
-    bm_puts("s; output "); bm_uint(count); bm_puts(" tokens, "); elapsed(end-ready);
-    bm_puts("s; "); rate(count,end-ready); bm_puts(" tok/s; ");
-    bm_puts(bm_parallel_mode()); bm_putc(' '); bm_uint(bm_parallel_count()); bm_puts(" workers");
-    bm_puts("; "); bm_puts(bm_simd_used());
-    bm_puts("; "); bm_puts(stop); bm_puts("]\n");
 }
 _Noreturn void bm_main(void) {
     bm_init();
@@ -195,7 +143,15 @@ _Noreturn void bm_main(void) {
             else { limit=value; bm_puts("Answer limit: "); bm_uint((unsigned)limit); bm_putc('\n'); }
             continue;
         }
-        if (line[0]=='/') { bm_puts("Unknown command. Use /help or /run help.\n"); continue; }
+        int forced=!strcmp(line,"/calc") || !memcmp(line,"/calc ",6);
+        bm_calc_expression literal, *expected=NULL;
+        if (forced) {
+            const char *request=line+5;
+            while (*request==' ' || *request=='\t') request++;
+            if (!*request) { bm_puts("Use /calc A + B (also -, *, /), or /calc QUESTION\n"); continue; }
+            if (bm_calc_parse_expression(request,&literal)==BM_CALC_CALL) expected=&literal;
+        }
+        if (line[0]=='/' && !forced) { bm_puts("Unknown command. Use /help or /run help.\n"); continue; }
         int n=turn_tokens(m,line,s->pos==0,ids,MAXCTX);
         if (n+3>s->ctx) { bm_puts("Question exceeds context. Shorten it.\n"); continue; }
         if (s->pos+n+3>s->ctx) {
@@ -203,6 +159,7 @@ _Noreturn void bm_main(void) {
             if (n+3>s->ctx) { bm_puts("Question exceeds context. Shorten it.\n"); continue; }
             s->pos=0; bm_puts("[context full; starting a new conversation]\n");
         }
-        respond(m,s,ids,n,limit);
+        calc_chat_result result;
+        calc_respond(m,s,ids,n,limit,forced,expected,&result);
     }
 }

@@ -1,3 +1,80 @@
+> Historiallinen testiloki. ASM1-kokeilu ja sen työkalut on poistettu 18.9.2026.
+> Nykyinen kokeilu: [LLM → LLVM SSA IR → x86-64 → ring3](calc.md).
+
+## LLM → LLVM SSA IR → x86-64 → ring3 (19.9.2026)
+
+Mallin toistama `/bytes`-konekoodi korvattiin rajatulla, oikeaa LLVM IR
+-syntaksia käyttävällä SSA-ohjelmalla. Bare metal -ympäristöön lisättiin pieni
+C-kääntäjä operaatioille `add`, `sub`, `mul` ja `sdiv`. Malli voi ketjuttaa
+operaatioita ja käyttää aiempia SSA-tuloksia; AIOS sijoittaa vakiot ja
+välitulokset NX-datamuistiin, muodostaa x86-64-koodin ja suorittaa koko ohjelman
+yhdellä ring3-ajolla. LLVM ei ole firmware-riippuvuus.
+
+Host-testit tarkistivat tiukan parserin, SSA-nimien määrittelyn ja käytön,
+64 operaation ja 128 vakion rajat, katkenneiden ohjelmien hylkäyksen,
+kirjaimellisen `/calc A OP B` -pyynnön vastaavuuden sekä palautesilmukan.
+AddressSanitizer- ja UndefinedBehaviorSanitizer-ajot läpäisivät IR-kääntäjän,
+laskureitityksen ja mallin ohjaussilmukan testit.
+
+`make test-process` läpäisi QEMU/OVMF:ssä yhdellä ja neljällä vCPU:lla. Mukana
+olivat SSA-ketjut, välituloksen uudelleenkäyttö, int64-reunat, modulo 2^64
+-laskenta, `nsw`-ylivuodot, nollajako ja `INT64_MIN / -1`. Jokaisen tapauksen
+jälkeen tarkistettiin prosessimuistin vapautuminen sekä firmware- ja
+rinnakkaistyöntekijätilan palautuminen.
+
+Erillinen LLVM 20.1.8 -vertailu hyväksyi testien IR:n ja laski 114 määritellyn
+tapauksen vertailuarvot. AIOS:n C-kääntäjän tuottama koodi antoi samat arvot
+oikeassa QEMU-ring3:ssa. Ylivuotoa tai jakovirhettä aiheuttavaa määrittelemätöntä
+LLVM-koodia ei ajettu LLVM-JIT:ssä; sen syntaksi tarkistettiin ja AIOS:n
+määritelty virhepolku testattiin erikseen.
+
+Oikea Q4-malli tuotti muun muassa kysymykseen `What is 1 + 100?` yhden
+`add nsw i64` -operaation ja sai CPU:lta arvon 101. Kaksivaiheiseen kysymykseen
+se tuotti `add` → `mul` -ketjun, jonka ring3-tulos oli 303. Sulkulausekkeeseen
+se tuotti erilliset `add`- ja `sub`-välitulokset sekä niitä käyttävän `mul`-
+operaation; ring3-tulos oli 150. Mallipromptia täsmennettiin oikean LLVM
+`sdiv`-syntaksin ja sulkujen säilyttämisen osalta havaittujen virheiden jälkeen.
+Koko yhdeksän tapauksen `test-calc-native`-ajo läpäisi myös neljä perusoperaatiota,
+sanallisen kertolaskun ja laskemattoman tervehdysreitin.
+
+Lopullinen EFI-kuva rakennettiin viimeisen parseritiukennuksen jälkeen. Sen koko
+on 165 689 tavua ja SHA-256 on
+`bdd8d51fe014ce32772c72b92feb79d982b104630808cdef8550908ead9c7724`.
+Käyttäjä varmisti edeltävän toiminnallisesti vastaavan EFI-kuvan toiminnan
+fyysisellä raudalla. Tämä on manuaalinen käynnistys- ja käyttösavutesti;
+laitteiston tarkkaa kokoonpanoa tai erillistä automaattista testiraporttia ei
+tallennettu.
+
+## LLM → konekoodi → ring3 -laskin (18.9.2026)
+
+ASM1- ja GNU as -oletusten tilalle lisättiin suora `/bytes`-protokolla.
+`model.bin` rakennettiin lukituista Qwen2.5-Coder-1.5B-Instruct-lähdepainoista;
+SHA-256 vastasi projektin `model.json`:n arvoa. UEFI-konsoli ja `dist/model.000`
+rakentuivat. Mallipainoja tai tokenizeria ei hienosäädetty.
+
+`make test PYTHON=.training-venv/bin/python` läpäisi 39 Python-testiä,
+C-testit ja C/NumPy-laskentavertailun. Laskimen host-testit varmensivat myös
+rajatut kutsut, katkenneiden/ristiriitaisten tavujen hylkäämisen, palautteen,
+nollajaon ohjauspolun ja pitkien tavallisten tekstivastausten tulostuksen.
+`make test-process` läpäisi yhdellä ja neljällä vCPU:lla myös neljä laskuoperaatiota,
+int32-reunat, 64-bittiset tulokset, nollajaon, muistivarauksien vapautuksen ja
+CPU-/firmware-/MP-tilan palautuksen.
+
+Oikean Q4-mallin koe käytti `test-calc-native`-polkua: sama `calc_model.h`-
+ohjaussilmukka ja `neural.c` ajoivat mallin natiivisti, ja alkuperäiset tavut
+sekä operandit siirrettiin QEMU/OVMF-ring3-prosessiin. Kaikki kuusi tapausta
+läpäisivät: 12 + 30 → 42; 17 - 25 → -8; 6 * 7 → 42; -17 / 5 → -3;
+13 laatikkoa, 9 pulttia kussakin → 117; tervehdys → ei työkalukutsua.
+Jokaisen laskun jälkeen malli sai CPU:n arvon ja mainitsi sen jatkovastauksessa.
+Sanallisesta tehtävästä malli tuotti itse `/bytes 13 * 9 : ...`; konsoli ei
+poiminut operandia/operaatiota kysymyksestä sääntöparserilla.
+
+Täysi, mallinkin VM:n sisällä ajava TCG-koe pysäytettiin eikä sitä merkitä
+läpäistyksi. KVM ei ole tässä ympäristössä käytettävissä. Natiivi + QEMU-ring3
+-koe varmentaa koko laskuketjun, mutta firmwareympäristössä ajettavan mallin
+livevarmennus jää erilliseksi `make test-calc-live` -kokeeksi. Tämä pieni koe
+osoittaa protokollan toiminnan; se ei ole kattava kieli- tai laskutaitojen arvio.
+
 # UEFI-version tarkistus
 
 ## Qwen2.5-Coder-1.5B-Instruct (13.9.2026)
